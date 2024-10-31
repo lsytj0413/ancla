@@ -1,0 +1,14 @@
+[package]
+name = "ancla"
+version = "0.1.0"
+edition = "2021"
+license-file = "LICENSE"
+description = "A Rust command line tool of golang's bolt database"
+repository = "https://github.com/lsytj0413/ancla"
+documentation = "https://docs.rs/ancla/latest/ancla/"
+categories = ["command-line-utilities", "database-implementations"]
+keywords = ["cli", "bbolt", "database", "db"]
+rust-version = "1.81"
+
+
+[dependencies]
