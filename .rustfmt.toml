@@ -1,0 +1,4 @@
+## You can use `rustfmt --help=config` to find out more about config options,
+## Use `cargo fmt --all -- --check` to validate formatting without changing files.
+
+edition = "2024"
