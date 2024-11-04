@@ -101,10 +101,26 @@ impl DB {
         }
     }
 
+    fn read_meta_root(&mut self, page: &Vec<u8>) -> u64 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(32) as *const u64;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
     fn read_page_u64(&mut self, page: &Vec<u8>, offset: u16) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
             let offset_ptr = ptr.offset(offset as isize) as *const u64;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
+    fn read_page_u32(&mut self, page: &Vec<u8>, offset: u16) -> u32 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(offset as isize) as *const u32;
             return offset_ptr.read_unaligned();
         }
     }
@@ -115,6 +131,35 @@ impl DB {
             freelist.push(self.read_page_u64(page, i * 8 + 16));
         }
         freelist
+    }
+
+    fn read_leaf_element(&mut self, page: &Vec<u8>, count: u16) {
+        for i in 0..count {
+            let flag = self.read_page_u32(page, 16 + i * 16);
+            let pos = self.read_page_u32(page, 16 + i * 16 + 4);
+            let key_len = self.read_page_u32(page, 16 + i * 16 + 8);
+            let value_len = self.read_page_u32(page, 16 + i * 16 + 12);
+
+            let key_start = 16 + i * 16 + (pos as u16);
+            let key_end = key_start + (key_len as u16);
+            let key = page.get((key_start as usize)..(key_end as usize)).unwrap();
+            let value = page
+                .get((key_end as usize)..((key_end + value_len as u16) as usize))
+                .unwrap();
+            println!(
+                "flag: {}, key: {}, value: {}, key_size: {}, value_size: {}",
+                flag,
+                String::from_utf8(key.to_vec()).unwrap(),
+                String::from_utf8(value.to_vec()).unwrap(),
+                key_len,
+                value_len,
+            );
+
+            if flag == 0x01 {
+                let bucket_page_id = self.read_page_u64(&Vec::from(value), 0);
+                println!("bucket_page_id: {}", bucket_page_id);
+            }
+        }
     }
 
     pub fn build(ancla_options: AnclaOptions) -> DB {
@@ -155,6 +200,7 @@ impl DB {
 
         let meta0_txid = self.read_meta_txid(&data);
         let meta0_freelist_pgid = self.read_meta_freelist_pgid(&data);
+        let meta0_root_pgid = self.read_meta_root(&data);
 
         let data = self.read_page(1);
         let size = data.capacity();
@@ -171,6 +217,7 @@ impl DB {
 
         let meta1_txid = self.read_meta_txid(&data);
         let meta1_freelist_pgid = self.read_meta_freelist_pgid(&data);
+        let meta1_root_pgid = self.read_meta_root(&data);
 
         let freelist_pgid = if meta1_txid > meta0_txid {
             meta1_freelist_pgid
@@ -193,6 +240,26 @@ impl DB {
 
         let freelist = self.read_freelist(&data, count);
         println!("Freelist: {:?}", freelist);
+
+        println!(
+            "meta0 root: {}, meta1 root: {}",
+            meta0_root_pgid, meta1_root_pgid
+        );
+        let root_pgid = if meta1_txid > meta0_txid {
+            meta1_root_pgid
+        } else {
+            meta0_root_pgid
+        };
+
+        println!("Root page: {}", root_pgid);
+        let data = self.read_page(root_pgid);
+        let page_flag = self.read_page_flag(&data);
+        if page_flag != 0x02 {
+            panic!("Invalid root page's type")
+        }
+
+        let count = self.read_page_count(&data);
+        self.read_leaf_element(&data, count);
 
         let mut table = Table::new();
         table.add_row(row!["PageSize", "value"]);
