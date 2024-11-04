@@ -51,6 +51,22 @@ impl DB {
         data
     }
 
+    fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
+        let data_len = 4096 * (overflow + 1) as usize;
+        let mut data = vec![0u8; data_len];
+        self.file
+            .seek(io::SeekFrom::Start((page_id * 4096) as u64))
+            .unwrap();
+        let size = self.file.read(data.as_mut_slice()).unwrap();
+        if size != data_len {
+            panic!(
+                "read_page_overflow: read {} bytes, expected {}",
+                size, data_len
+            );
+        }
+        data
+    }
+
     fn read_page_flag(&mut self, page: &Vec<u8>) -> u16 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
@@ -61,7 +77,17 @@ impl DB {
         }
     }
 
-    fn read_page_size(&mut self, page: &Vec<u8>) -> u32 {
+    fn read_page_overflow_value(&mut self, page: &Vec<u8>) -> u32 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(12) as *const u8;
+            let value_ptr = std::slice::from_raw_parts(offset_ptr, 4);
+            let value: u32 = u32::from_le_bytes(value_ptr.try_into().unwrap());
+            value
+        }
+    }
+
+    fn read_meta_page_size(&mut self, page: &Vec<u8>) -> u32 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
             let offset_ptr = ptr.offset(24) as *const u32;
@@ -158,7 +184,27 @@ impl DB {
             if flag == 0x01 {
                 let bucket_page_id = self.read_page_u64(&Vec::from(value), 0);
                 println!("bucket_page_id: {}", bucket_page_id);
+                if bucket_page_id == 0 {
+                    // This is an inline bucket, so we need to read the bucket data
+                    let data = value[16..].to_vec();
+                    let page_count = self.read_page_count(&data);
+                    println!(
+                        "bucket_page_id: {}, page_count: {}",
+                        bucket_page_id, page_count
+                    );
+                    self.read_leaf_element(&data, page_count);
+                    continue;
+                }
+
+                self.print_page(bucket_page_id);
             }
+        }
+    }
+
+    fn read_branch_element(&mut self, page: &Vec<u8>, count: u16) {
+        for i in 0..count {
+            let next_page_id = self.read_page_u64(page, 16 + i * 16 + 8);
+            self.print_page(next_page_id);
         }
     }
 
@@ -170,6 +216,26 @@ impl DB {
         }
     }
 
+    pub fn print_page(&mut self, page_id: u64) {
+        let data = self.read_page(page_id);
+        let page_flag = self.read_page_flag(&data);
+        let page_count = self.read_page_count(&data);
+        let page_overflow = self.read_page_overflow_value(&data);
+        println!(
+            "Page ID: {}, flag: {}, count: {}, overflow: {}",
+            page_id, page_flag, page_count, page_overflow
+        );
+
+        let data = self.read_page_overflow(page_id, page_overflow);
+        if page_flag == 0x02 {
+            // leaf page
+            self.read_leaf_element(&data, page_count);
+        } else if page_flag == 0x01 {
+            // branch page
+            self.read_branch_element(&data, page_count);
+        }
+    }
+
     pub fn print_db(&mut self) {
         let data = self.read_page(0);
         let size = data.capacity();
@@ -178,7 +244,7 @@ impl DB {
         println!(
             "first page flag: {}, {}",
             page_flag,
-            self.read_page_size(&data)
+            self.read_meta_page_size(&data)
         );
         if page_flag != 0x04 {
             panic!("Invalid page 0's type")
@@ -209,7 +275,7 @@ impl DB {
         println!(
             "second page flag: {}, {}",
             page_flag,
-            self.read_page_size(&data)
+            self.read_meta_page_size(&data)
         );
         if page_flag != 0x04 {
             panic!("Invalid page 1's type")
@@ -258,8 +324,9 @@ impl DB {
             panic!("Invalid root page's type")
         }
 
-        let count = self.read_page_count(&data);
-        self.read_leaf_element(&data, count);
+        self.print_page(root_pgid);
+        // let count = self.read_page_count(&data);
+        // self.read_leaf_element(&data, count);
 
         let mut table = Table::new();
         table.add_row(row!["PageSize", "value"]);
