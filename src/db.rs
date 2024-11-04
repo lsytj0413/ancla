@@ -27,7 +27,7 @@ struct Page {
     //   - 1: meta1
     // The are the root page of database, and the meta (valid) which have bigger
     // txid is current available.
-    id: pgid,
+    id: Pgid,
     flags: u16,
     count: u16,
     overflow: u32,
@@ -35,10 +35,10 @@ struct Page {
 
 #[derive(Debug)]
 #[repr(transparent)]
-struct pgid(u64);
+struct Pgid(u64);
 
 impl DB {
-    fn read_page(&mut self, page_id: u32) -> Vec<u8> {
+    fn read_page(&mut self, page_id: u64) -> Vec<u8> {
         let mut data = vec![0u8; 4096];
         self.file
             .seek(io::SeekFrom::Start((page_id * 4096) as u64))
@@ -69,12 +69,52 @@ impl DB {
         }
     }
 
+    fn read_page_count(&mut self, page: &Vec<u8>) -> u16 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(10) as *const u16;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
     fn read_meta_checksum(&mut self, page: &Vec<u8>) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
             let offset_ptr = ptr.offset(72) as *const u64;
             return offset_ptr.read_unaligned();
         }
+    }
+
+    fn read_meta_txid(&mut self, page: &Vec<u8>) -> u64 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(64) as *const u64;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
+    fn read_meta_freelist_pgid(&mut self, page: &Vec<u8>) -> u64 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(48) as *const u64;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
+    fn read_page_u64(&mut self, page: &Vec<u8>, offset: u16) -> u64 {
+        let ptr: *const u8 = page.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.offset(offset as isize) as *const u64;
+            return offset_ptr.read_unaligned();
+        }
+    }
+
+    fn read_freelist(&mut self, page: &Vec<u8>, count: u16) -> Vec<u64> {
+        let mut freelist: Vec<u64> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            freelist.push(self.read_page_u64(page, i * 8 + 16));
+        }
+        freelist
     }
 
     pub fn build(ancla_options: AnclaOptions) -> DB {
@@ -113,6 +153,9 @@ impl DB {
             );
         }
 
+        let meta0_txid = self.read_meta_txid(&data);
+        let meta0_freelist_pgid = self.read_meta_freelist_pgid(&data);
+
         let data = self.read_page(1);
         let size = data.capacity();
         println!("{}, {:?}", size, &data[16..20]);
@@ -125,6 +168,31 @@ impl DB {
         if page_flag != 0x04 {
             panic!("Invalid page 1's type")
         }
+
+        let meta1_txid = self.read_meta_txid(&data);
+        let meta1_freelist_pgid = self.read_meta_freelist_pgid(&data);
+
+        let freelist_pgid = if meta1_txid > meta0_txid {
+            meta1_freelist_pgid
+        } else {
+            meta0_freelist_pgid
+        };
+
+        println!("Freelist root page: {}", freelist_pgid);
+        let data = self.read_page(freelist_pgid);
+        let count = self.read_page_count(&data);
+        if count >= 0xFFFF {
+            panic!("Too large page count")
+        }
+
+        let data = self.read_page(freelist_pgid);
+        let page_flag = self.read_page_flag(&data);
+        if page_flag != 0x10 {
+            panic!("Invalid freelist page's type")
+        }
+
+        let freelist = self.read_freelist(&data, count);
+        println!("Freelist: {:?}", freelist);
 
         let mut table = Table::new();
         table.add_row(row!["PageSize", "value"]);
