@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use fnv_rs::{Fnv64, FnvHasher};
 use prettytable::Table;
 use std::{
@@ -20,7 +21,7 @@ pub struct DB {
 #[derive(Debug)]
 #[repr(C)]
 struct Page {
-    // id is the identifier of the page, it start from 0,
+    // is the identifier of the page, it start from 0,
     // and is incremented by 1 for each page.
     // There have two special pages:
     //   - 0: meta0
@@ -28,14 +29,113 @@ struct Page {
     // The are the root page of database, and the meta (valid) which have bigger
     // txid is current available.
     id: Pgid,
-    flags: u16,
+    // indicate which type this page is.
+    flags: PageFlag,
+    // number of element in this page, if the page is freelist page:
+    // 1. if value < 0xFFFF, it's the number of pageid
+    // 2. if value is 0xFFFF, the next 8-bytes（page's offset 16） is the number of pageid.
     count: u16,
+    // the continous number of page, all page's data is stored in the buffer which
+    // size is (1 + overflow) * PAGE_SIZE.
     overflow: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, PartialOrd)]
 #[repr(transparent)]
+#[derive(Clone)]
 struct Pgid(u64);
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct PageFlag: u16 {
+        // Branch page contains the branch element, which represent the
+        // sub page and it's minest key value.
+        const BranchPageFlag = 0x01;
+        // Leaf page contains the leaf element, which represent the
+        // key、value pair, and the element maybe bucket or not.
+        const LeafPageFlag = 0x02;
+        // Meta page contains the meta information about the database,
+        // it must be page 0 or 1.
+        const MetaPageFlag = 0x04;
+        // Freelist page contains all pageid which is free to be used.
+        const FreelistPageFlag = 0x10;
+    }
+}
+
+impl PageFlag {
+    pub fn as_u16(&self) -> u16 {
+        self.bits() as u16
+    }
+}
+
+#[derive(Debug)]
+#[repr(C)]
+struct Meta {
+    // The magic number of bolt database, must be MAGIC_NUMBER.
+    magic: u32,
+    // Database file format version, must be DATAFILE_VERSION.
+    version: u32,
+    // Size in bytes of each page.
+    page_size: u32,
+    _flag: u32, // unused
+    // Rust doesn't have `type embedding` that Go has, see
+    // https://github.com/rust-lang/rfcs/issues/2431 for more detail.
+    // The root data pageid of the database.
+    root_pgid: Pgid,
+    root_sequence: u64,
+    // The root freelist pageid of the database.
+    freelist_pgid: Pgid,
+    // The max pageid of the database, it shoule be FILE_SIZE / PAGE_SIZE.
+    max_pgid: Pgid,
+    // current max txid of the databse, there have two Meta page, which have bigger txid
+    // is valid.
+    txid: u64,
+    checksum: u64,
+}
+
+// Represents a marker value to indicate that a file is a Bolt DB.
+const MAGIC_NUMBER: u32 = 0xED0CDAED;
+
+// The data file format version.
+const DATAFILE_VERSION: u32 = 2;
+
+#[derive(Debug)]
+#[repr(C)]
+struct BranchPageElement {
+    // pos is the offset of the element's data in the page,
+    // start at current element's position.
+    pos: u32,
+    // the key's length in bytes.
+    ksize: u32,
+    // the next-level pageid.
+    pgid: Pgid,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+struct LeafPageElement {
+    // indicate what type of the element, if flags is 1, it's a bucket,
+    // otherwise it's a key-value pair.
+    flags: u32,
+    // pos is the offset of the element's data in the page,
+    // start at current element's position.
+    pos: u32,
+    // the key's length in bytes.
+    ksize: u32,
+    // the value's length in bytes.
+    vsize: u32,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+// Bucket represents the on-file representation of a bucket. It is stored as
+// the `value` of a bucket key. If the root is 0, this bucket is small enough
+// then it's root page can be stored inline in the value, just after the bucket header.
+struct Bucket {
+    // the bucket's root-level page.
+    root: Pgid,
+    sequence: u64,
+}
 
 impl DB {
     fn read_page(&mut self, page_id: u64) -> Vec<u8> {
@@ -217,6 +317,8 @@ impl DB {
     }
 
     pub fn print_page(&mut self, page_id: u64) {
+        if Pgid(0) < Pgid(1) {}
+
         let data = self.read_page(page_id);
         let page_flag = self.read_page_flag(&data);
         let page_count = self.read_page_count(&data);
