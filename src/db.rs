@@ -7,6 +7,7 @@ use std::{
     io::{self, Read, Seek},
     ptr,
 };
+use thiserror::Error;
 use tui::{
     backend::CrosstermBackend,
     widgets::{Block, Borders},
@@ -59,11 +60,14 @@ fn read_value<T: ByteValue>(data: &Vec<u8>, offset: usize) -> T {
 }
 
 impl TryFrom<&Vec<u8>> for Page {
-    type Error = String;
+    type Error = DatabaseError;
 
     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(format!("Two small data {} to convert to Page", data.len()));
+            return Err(DatabaseError::TooSmallData {
+                expect: 16,
+                got: data.len(),
+            });
         }
 
         Ok(Page {
@@ -140,12 +144,21 @@ struct Meta {
     checksum: u64,
 }
 
+#[derive(Error, Debug)]
+pub enum DatabaseError {
+    #[error("data buffer is too small, expect {expect}, got {got}")]
+    TooSmallData { expect: usize, got: usize },
+}
+
 impl TryFrom<&Vec<u8>> for Meta {
-    type Error = String;
+    type Error = DatabaseError;
 
     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
         if data.len() < 80 {
-            return Err(format!("Two small data {} to convert to Meta", data.len()));
+            return Err(DatabaseError::TooSmallData {
+                expect: 80,
+                got: data.len(),
+            });
         }
 
         Ok(Meta {
@@ -182,14 +195,14 @@ struct BranchPageElement {
 }
 
 impl TryFrom<&Vec<u8>> for BranchPageElement {
-    type Error = String;
+    type Error = DatabaseError;
 
     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(format!(
-                "Two small data {} to convert to BranchPageElement",
-                data.len()
-            ));
+            return Err(DatabaseError::TooSmallData {
+                expect: 16,
+                got: data.len(),
+            });
         }
 
         Ok(BranchPageElement {
@@ -216,14 +229,14 @@ struct LeafPageElement {
 }
 
 impl TryFrom<&Vec<u8>> for LeafPageElement {
-    type Error = String;
+    type Error = DatabaseError;
 
     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(format!(
-                "Two small data {} to convert to LeafPageElement",
-                data.len()
-            ));
+            return Err(DatabaseError::TooSmallData {
+                expect: 16,
+                got: data.len(),
+            });
         }
 
         Ok(LeafPageElement {
@@ -247,14 +260,14 @@ struct Bucket {
 }
 
 impl TryFrom<&Vec<u8>> for Bucket {
-    type Error = String;
+    type Error = DatabaseError;
 
     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(format!(
-                "Two small data {} to convert to Bucket",
-                data.len()
-            ));
+            return Err(DatabaseError::TooSmallData {
+                expect: 16,
+                got: data.len(),
+            });
         }
 
         Ok(Bucket {
@@ -284,8 +297,9 @@ impl DB {
     fn read_page_u64(&mut self, page: &Vec<u8>, offset: u16) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
-            let offset_ptr = ptr.offset(offset as isize) as *const u64;
-            return offset_ptr.read_unaligned();
+            let offset_ptr = ptr.offset(offset as isize) as *const u8;
+            let value_ptr = std::slice::from_raw_parts(offset_ptr, 8);
+            u64::from_le_bytes(value_ptr.try_into().unwrap())
         }
     }
 
@@ -340,8 +354,11 @@ impl DB {
 
     fn read_branch_element(&mut self, page: &Vec<u8>, count: u16) {
         for i in 0..count {
-            let next_page_id = read_value::<u64>(page, (16 + i * 16 + 8) as usize);
-            self.print_page(next_page_id);
+            let start = (16 + i * 16) as usize;
+            let branch_element: BranchPageElement =
+                BranchPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
+                    .unwrap();
+            self.print_page(branch_element.pgid.into());
         }
     }
 
