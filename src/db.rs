@@ -1,7 +1,8 @@
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
 use fnv_rs::{Fnv64, FnvHasher};
 use prettytable::Table;
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{self, Read, Seek},
     ptr,
@@ -16,6 +17,9 @@ use typed_builder::TypedBuilder;
 pub struct DB {
     pub(crate) options: AnclaOptions,
     file: File,
+
+    pages: BTreeMap<Pgid, Page>,
+    page_datas: BTreeMap<Pgid, Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -40,10 +44,53 @@ struct Page {
     overflow: u32,
 }
 
+trait ByteValue {}
+
+impl ByteValue for u16 {}
+impl ByteValue for u32 {}
+impl ByteValue for u64 {}
+
+fn read_value<T: ByteValue>(data: &Vec<u8>, offset: usize) -> T {
+    let ptr: *const u8 = data.as_ptr();
+    unsafe {
+        let offset_ptr = ptr.offset(offset as isize) as *const T;
+        return offset_ptr.read_unaligned();
+    }
+}
+
+impl TryFrom<&Vec<u8>> for Page {
+    type Error = String;
+
+    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+        if data.len() < 16 {
+            return Err(format!("Two small data {} to convert to Page", data.len()));
+        }
+
+        Ok(Page {
+            id: Pgid(read_value::<u64>(data, 0)),
+            flags: PageFlag::from_bits_truncate(read_value::<u16>(data, 8)),
+            count: read_value::<u16>(data, 10),
+            overflow: read_value::<u32>(data, 12),
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, PartialOrd)]
 #[repr(transparent)]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Pgid(u64);
+
+impl From<u64> for Pgid {
+    fn from(id: u64) -> Self {
+        Pgid(id)
+    }
+}
+
+impl Into<u64> for Pgid {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,6 +140,29 @@ struct Meta {
     checksum: u64,
 }
 
+impl TryFrom<&Vec<u8>> for Meta {
+    type Error = String;
+
+    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+        if data.len() < 80 {
+            return Err(format!("Two small data {} to convert to Meta", data.len()));
+        }
+
+        Ok(Meta {
+            magic: read_value::<u32>(data, 16),
+            version: read_value::<u32>(data, 20),
+            page_size: read_value::<u32>(data, 24),
+            _flag: 0,
+            root_pgid: Pgid(read_value::<u64>(data, 32)),
+            root_sequence: read_value::<u64>(data, 40),
+            freelist_pgid: Pgid(read_value::<u64>(data, 48)),
+            max_pgid: Pgid(read_value::<u64>(data, 56)),
+            txid: read_value::<u64>(data, 64),
+            checksum: read_value::<u64>(data, 72),
+        })
+    }
+}
+
 // Represents a marker value to indicate that a file is a Bolt DB.
 const MAGIC_NUMBER: u32 = 0xED0CDAED;
 
@@ -111,6 +181,25 @@ struct BranchPageElement {
     pgid: Pgid,
 }
 
+impl TryFrom<&Vec<u8>> for BranchPageElement {
+    type Error = String;
+
+    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+        if data.len() < 16 {
+            return Err(format!(
+                "Two small data {} to convert to BranchPageElement",
+                data.len()
+            ));
+        }
+
+        Ok(BranchPageElement {
+            pos: read_value::<u32>(data, 0),
+            ksize: read_value::<u32>(data, 4),
+            pgid: Pgid(read_value::<u64>(data, 8)),
+        })
+    }
+}
+
 #[derive(Debug)]
 #[repr(C)]
 struct LeafPageElement {
@@ -126,6 +215,26 @@ struct LeafPageElement {
     vsize: u32,
 }
 
+impl TryFrom<&Vec<u8>> for LeafPageElement {
+    type Error = String;
+
+    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+        if data.len() < 16 {
+            return Err(format!(
+                "Two small data {} to convert to LeafPageElement",
+                data.len()
+            ));
+        }
+
+        Ok(LeafPageElement {
+            flags: read_value::<u32>(data, 0),
+            pos: read_value::<u32>(data, 4),
+            ksize: read_value::<u32>(data, 8),
+            vsize: read_value::<u32>(data, 12),
+        })
+    }
+}
+
 #[derive(Debug)]
 #[repr(C)]
 // Bucket represents the on-file representation of a bucket. It is stored as
@@ -137,20 +246,25 @@ struct Bucket {
     sequence: u64,
 }
 
-impl DB {
-    fn read_page(&mut self, page_id: u64) -> Vec<u8> {
-        let mut data = vec![0u8; 4096];
-        self.file
-            .seek(io::SeekFrom::Start((page_id * 4096) as u64))
-            .unwrap();
+impl TryFrom<&Vec<u8>> for Bucket {
+    type Error = String;
 
-        let size = self.file.read(data.as_mut_slice()).unwrap();
-        if size != 4096 {
-            panic!("Invalid page size");
+    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+        if data.len() < 16 {
+            return Err(format!(
+                "Two small data {} to convert to Bucket",
+                data.len()
+            ));
         }
-        data
-    }
 
+        Ok(Bucket {
+            root: Pgid(read_value::<u64>(data, 0)),
+            sequence: read_value::<u64>(data, 8),
+        })
+    }
+}
+
+impl DB {
     fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
         let data_len = 4096 * (overflow + 1) as usize;
         let mut data = vec![0u8; data_len];
@@ -167,86 +281,10 @@ impl DB {
         data
     }
 
-    fn read_page_flag(&mut self, page: &Vec<u8>) -> u16 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(8) as *const u8;
-            let value_ptr = std::slice::from_raw_parts(offset_ptr, 2);
-            let value: u16 = u16::from_le_bytes(value_ptr.try_into().unwrap());
-            value
-        }
-    }
-
-    fn read_page_overflow_value(&mut self, page: &Vec<u8>) -> u32 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(12) as *const u8;
-            let value_ptr = std::slice::from_raw_parts(offset_ptr, 4);
-            let value: u32 = u32::from_le_bytes(value_ptr.try_into().unwrap());
-            value
-        }
-    }
-
-    fn read_meta_page_size(&mut self, page: &Vec<u8>) -> u32 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(24) as *const u32;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_page_count(&mut self, page: &Vec<u8>) -> u16 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(10) as *const u16;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_meta_checksum(&mut self, page: &Vec<u8>) -> u64 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(72) as *const u64;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_meta_txid(&mut self, page: &Vec<u8>) -> u64 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(64) as *const u64;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_meta_freelist_pgid(&mut self, page: &Vec<u8>) -> u64 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(48) as *const u64;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_meta_root(&mut self, page: &Vec<u8>) -> u64 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(32) as *const u64;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
     fn read_page_u64(&mut self, page: &Vec<u8>, offset: u16) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
             let offset_ptr = ptr.offset(offset as isize) as *const u64;
-            return offset_ptr.read_unaligned();
-        }
-    }
-
-    fn read_page_u32(&mut self, page: &Vec<u8>, offset: u16) -> u32 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(offset as isize) as *const u32;
             return offset_ptr.read_unaligned();
         }
     }
@@ -261,38 +299,37 @@ impl DB {
 
     fn read_leaf_element(&mut self, page: &Vec<u8>, count: u16) {
         for i in 0..count {
-            let flag = self.read_page_u32(page, 16 + i * 16);
-            let pos = self.read_page_u32(page, 16 + i * 16 + 4);
-            let key_len = self.read_page_u32(page, 16 + i * 16 + 8);
-            let value_len = self.read_page_u32(page, 16 + i * 16 + 12);
+            let start = (16 + i * 16) as usize;
+            let leaf_element: LeafPageElement =
+                LeafPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec()).unwrap();
 
-            let key_start = 16 + i * 16 + (pos as u16);
-            let key_end = key_start + (key_len as u16);
+            let key_start = 16 + i * 16 + (leaf_element.pos as u16);
+            let key_end = key_start + (leaf_element.ksize as u16);
             let key = page.get((key_start as usize)..(key_end as usize)).unwrap();
             let value = page
-                .get((key_end as usize)..((key_end + value_len as u16) as usize))
+                .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
                 .unwrap();
             println!(
                 "flag: {}, key: {}, value: {}, key_size: {}, value_size: {}",
-                flag,
+                leaf_element.flags,
                 String::from_utf8(key.to_vec()).unwrap(),
                 String::from_utf8(value.to_vec()).unwrap(),
-                key_len,
-                value_len,
+                leaf_element.ksize,
+                leaf_element.vsize,
             );
 
-            if flag == 0x01 {
+            if leaf_element.flags == 0x01 {
                 let bucket_page_id = self.read_page_u64(&Vec::from(value), 0);
                 println!("bucket_page_id: {}", bucket_page_id);
                 if bucket_page_id == 0 {
                     // This is an inline bucket, so we need to read the bucket data
                     let data = value[16..].to_vec();
-                    let page_count = self.read_page_count(&data);
+                    let page: Page = TryFrom::try_from(&data).unwrap();
                     println!(
                         "bucket_page_id: {}, page_count: {}",
-                        bucket_page_id, page_count
+                        bucket_page_id, page.count
                     );
-                    self.read_leaf_element(&data, page_count);
+                    self.read_leaf_element(&data, page.count);
                     continue;
                 }
 
@@ -303,7 +340,7 @@ impl DB {
 
     fn read_branch_element(&mut self, page: &Vec<u8>, count: u16) {
         for i in 0..count {
-            let next_page_id = self.read_page_u64(page, 16 + i * 16 + 8);
+            let next_page_id = read_value::<u64>(page, (16 + i * 16 + 8) as usize);
             self.print_page(next_page_id);
         }
     }
@@ -313,126 +350,85 @@ impl DB {
         DB {
             options: ancla_options,
             file,
+            pages: BTreeMap::new(),
+            page_datas: BTreeMap::new(),
         }
     }
 
     pub fn print_page(&mut self, page_id: u64) {
-        if Pgid(0) < Pgid(1) {}
+        let data = self.read_page_overflow(page_id, 0);
+        let page: Page = TryFrom::try_from(&data).unwrap();
+        println!("print page: {:?}", page);
 
-        let data = self.read_page(page_id);
-        let page_flag = self.read_page_flag(&data);
-        let page_count = self.read_page_count(&data);
-        let page_overflow = self.read_page_overflow_value(&data);
-        println!(
-            "Page ID: {}, flag: {}, count: {}, overflow: {}",
-            page_id, page_flag, page_count, page_overflow
-        );
-
-        let data = self.read_page_overflow(page_id, page_overflow);
-        if page_flag == 0x02 {
+        let data = self.read_page_overflow(page_id, page.overflow);
+        if page.flags.as_u16() == 0x02 {
             // leaf page
-            self.read_leaf_element(&data, page_count);
-        } else if page_flag == 0x01 {
+            self.read_leaf_element(&data, page.count);
+        } else if page.flags.as_u16() == 0x01 {
             // branch page
-            self.read_branch_element(&data, page_count);
+            self.read_branch_element(&data, page.count);
         }
     }
 
     pub fn print_db(&mut self) {
-        let data = self.read_page(0);
-        let size = data.capacity();
-        println!("{}, {:?}", size, &data[16..20]);
-        let page_flag = self.read_page_flag(&data);
-        println!(
-            "first page flag: {}, {}",
-            page_flag,
-            self.read_meta_page_size(&data)
-        );
-        if page_flag != 0x04 {
+        let data = self.read_page_overflow(0, 0);
+        let page0: Page = TryFrom::try_from(&data).unwrap();
+        println!("first page: {:?}", page0);
+        if page0.flags.as_u16() != 0x04 {
             panic!("Invalid page 0's type")
         }
 
-        let hash = Fnv64::hash(&data[16..72]);
-        println!("page 0 hash: {}", hash);
-        let hash_data = hash.as_bytes();
-        println!("hash data: {}", hash.len());
-        let new_checksum = u64::from_be_bytes(hash_data.try_into().unwrap());
-
-        let checksum = self.read_meta_checksum(&data);
-        if checksum != new_checksum {
+        let new_checksum =
+            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
+        let meta0: Meta = TryFrom::try_from(&data).unwrap();
+        println!("first meta: {:?}", meta0);
+        if meta0.checksum != new_checksum {
             panic!(
                 "Invalid page 0's checksum, {:0x} != {:0x}",
-                checksum, new_checksum
+                meta0.checksum, new_checksum
             );
         }
 
-        let meta0_txid = self.read_meta_txid(&data);
-        let meta0_freelist_pgid = self.read_meta_freelist_pgid(&data);
-        let meta0_root_pgid = self.read_meta_root(&data);
-
-        let data = self.read_page(1);
-        let size = data.capacity();
-        println!("{}, {:?}", size, &data[16..20]);
-        let page_flag = self.read_page_flag(&data);
-        println!(
-            "second page flag: {}, {}",
-            page_flag,
-            self.read_meta_page_size(&data)
-        );
-        if page_flag != 0x04 {
-            panic!("Invalid page 1's type")
+        let data = self.read_page_overflow(1, 0);
+        let page1: Page = TryFrom::try_from(&data).unwrap();
+        println!("second page: {:?}", page1);
+        if page1.flags.as_u16() != 0x04 {
+            panic!("Invalid page 0's type")
         }
 
-        let meta1_txid = self.read_meta_txid(&data);
-        let meta1_freelist_pgid = self.read_meta_freelist_pgid(&data);
-        let meta1_root_pgid = self.read_meta_root(&data);
-
-        let freelist_pgid = if meta1_txid > meta0_txid {
-            meta1_freelist_pgid
+        let meta1: Meta = TryFrom::try_from(&data).unwrap();
+        println!("second meta: {:?}", meta1);
+        let (page, meta) = if meta1.txid > meta0.txid {
+            (page1, meta1)
         } else {
-            meta0_freelist_pgid
+            (page0, meta0)
         };
 
-        println!("Freelist root page: {}", freelist_pgid);
-        let data = self.read_page(freelist_pgid);
-        let count = self.read_page_count(&data);
-        if count >= 0xFFFF {
+        println!("Active root page: {:?} {:?}", page, meta);
+        let data = self.read_page_overflow(meta.freelist_pgid.into(), 0);
+        let freelist_page: Page = TryFrom::try_from(&data).unwrap();
+        if !freelist_page.flags.contains(PageFlag::FreelistPageFlag) {
+            panic!("Invalid freelist page type")
+        }
+        if freelist_page.count >= 0xFFFF {
             panic!("Too large page count")
         }
 
-        let data = self.read_page(freelist_pgid);
-        let page_flag = self.read_page_flag(&data);
-        if page_flag != 0x10 {
-            panic!("Invalid freelist page's type")
-        }
-
-        let freelist = self.read_freelist(&data, count);
+        let data = self.read_page_overflow(meta.freelist_pgid.into(), freelist_page.overflow);
+        let freelist = self.read_freelist(&data, page.count);
         println!("Freelist: {:?}", freelist);
 
-        println!(
-            "meta0 root: {}, meta1 root: {}",
-            meta0_root_pgid, meta1_root_pgid
-        );
-        let root_pgid = if meta1_txid > meta0_txid {
-            meta1_root_pgid
-        } else {
-            meta0_root_pgid
-        };
-
-        println!("Root page: {}", root_pgid);
-        let data = self.read_page(root_pgid);
-        let page_flag = self.read_page_flag(&data);
-        if page_flag != 0x02 {
+        let data = self.read_page_overflow(meta.root_pgid.into(), 0);
+        let root_page: Page = TryFrom::try_from(&data).unwrap();
+        if root_page.flags.as_u16() != 0x02 {
             panic!("Invalid root page's type")
         }
 
-        self.print_page(root_pgid);
-        // let count = self.read_page_count(&data);
-        // self.read_leaf_element(&data, count);
+        self.print_page(root_page.id.into());
 
         let mut table = Table::new();
         table.add_row(row!["PageSize", "value"]);
-        table.add_row(row![size]);
+        table.add_row(row![10]);
         table.printstd();
 
         let stdout = io::stdout();

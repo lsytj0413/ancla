@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .db_path(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("testdata")
-                .join("test1.db")
+                .join("test.db")
                 .to_str()
                 .unwrap()
                 .to_string(),
