@@ -19,8 +19,26 @@ pub struct DB {
     pub(crate) options: AnclaOptions,
     file: File,
 
-    pages: BTreeMap<Pgid, Page>,
+    pages: BTreeMap<Pgid, PageInfo>,
     page_datas: BTreeMap<Pgid, Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PageInfo {
+    pub id: u64,
+    pub typ: PageType,
+    pub overflow: u64,
+    pub capacity: u64,
+    pub used: u64,
+    pub parent_page_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PageType {
+    MetaPage,
+    DataPage,
+    FreelistPage,
+    FreePage,
 }
 
 #[derive(Debug)]
@@ -79,7 +97,7 @@ impl TryFrom<&Vec<u8>> for Page {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct Pgid(u64);
@@ -311,7 +329,13 @@ impl DB {
         freelist
     }
 
-    fn read_leaf_element(&mut self, page: &Vec<u8>, count: u16) {
+    fn read_leaf_element(
+        &mut self,
+        page: &Vec<u8>,
+        count: u16,
+        page_id: u64,
+        parent_page_id: Option<u64>,
+    ) {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let leaf_element: LeafPageElement =
@@ -343,22 +367,28 @@ impl DB {
                         "bucket_page_id: {}, page_count: {}",
                         bucket_page_id, page.count
                     );
-                    self.read_leaf_element(&data, page.count);
+                    self.read_leaf_element(&data, page.count, page_id, parent_page_id);
                     continue;
                 }
 
-                self.print_page(bucket_page_id);
+                self.print_page(bucket_page_id, Some(page_id));
             }
         }
     }
 
-    fn read_branch_element(&mut self, page: &Vec<u8>, count: u16) {
+    fn read_branch_element(
+        &mut self,
+        page: &Vec<u8>,
+        count: u16,
+        page_id: u64,
+        _parent_page_id: Option<u64>,
+    ) {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let branch_element: BranchPageElement =
                 BranchPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
                     .unwrap();
-            self.print_page(branch_element.pgid.into());
+            self.print_page(branch_element.pgid.into(), Some(page_id));
         }
     }
 
@@ -372,18 +402,30 @@ impl DB {
         }
     }
 
-    pub fn print_page(&mut self, page_id: u64) {
+    pub fn print_page(&mut self, page_id: u64, parent_page_id: Option<u64>) {
         let data = self.read_page_overflow(page_id, 0);
         let page: Page = TryFrom::try_from(&data).unwrap();
-        println!("print page: {:?}", page);
+        println!("print page: {:?}, {:?}", page, parent_page_id);
 
         let data = self.read_page_overflow(page_id, page.overflow);
+        self.pages.insert(
+            Pgid(page_id),
+            PageInfo {
+                id: page_id,
+                typ: PageType::DataPage,
+                overflow: page.overflow as u64,
+                capacity: 4096 * (page.overflow + 1) as u64,
+                used: 0,
+                parent_page_id: parent_page_id,
+            },
+        );
+
         if page.flags.as_u16() == 0x02 {
             // leaf page
-            self.read_leaf_element(&data, page.count);
+            self.read_leaf_element(&data, page.count, page_id, parent_page_id);
         } else if page.flags.as_u16() == 0x01 {
             // branch page
-            self.read_branch_element(&data, page.count);
+            self.read_branch_element(&data, page.count, page_id, parent_page_id);
         }
     }
 
@@ -405,6 +447,17 @@ impl DB {
                 meta0.checksum, new_checksum
             );
         }
+        self.pages.insert(
+            Pgid(0),
+            PageInfo {
+                id: 0,
+                typ: PageType::MetaPage,
+                overflow: 0,
+                capacity: 4096,
+                used: 80,
+                parent_page_id: None,
+            },
+        );
 
         let data = self.read_page_overflow(1, 0);
         let page1: Page = TryFrom::try_from(&data).unwrap();
@@ -420,6 +473,17 @@ impl DB {
         } else {
             (page0, meta0)
         };
+        self.pages.insert(
+            Pgid(1),
+            PageInfo {
+                id: 1,
+                typ: PageType::MetaPage,
+                overflow: 0,
+                capacity: 4096,
+                used: 80,
+                parent_page_id: None,
+            },
+        );
 
         println!("Active root page: {:?} {:?}", page, meta);
         let data = self.read_page_overflow(meta.freelist_pgid.into(), 0);
@@ -430,9 +494,36 @@ impl DB {
         if freelist_page.count >= 0xFFFF {
             panic!("Too large page count")
         }
+        self.pages.insert(
+            Pgid(meta.freelist_pgid.into()),
+            PageInfo {
+                id: meta.freelist_pgid.into(),
+                typ: PageType::FreelistPage,
+                overflow: freelist_page.overflow as u64,
+                capacity: 4096,
+                used: 16 + (freelist_page.count as u64 * 8),
+                parent_page_id: None,
+            },
+        );
 
         let data = self.read_page_overflow(meta.freelist_pgid.into(), freelist_page.overflow);
-        let freelist = self.read_freelist(&data, page.count);
+        let freelist = self.read_freelist(&data, freelist_page.count);
+        // See
+        // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
+        // 2. https://doc.rust-lang.org/reference/expressions/loop-expr.html#iterator-loops
+        for &i in &freelist {
+            self.pages.insert(
+                Pgid(i),
+                PageInfo {
+                    id: i,
+                    typ: PageType::FreePage,
+                    overflow: 0,
+                    capacity: 4096,
+                    used: 0,
+                    parent_page_id: None,
+                },
+            );
+        }
         println!("Freelist: {:?}", freelist);
 
         let data = self.read_page_overflow(meta.root_pgid.into(), 0);
@@ -441,7 +532,11 @@ impl DB {
             panic!("Invalid root page's type")
         }
 
-        self.print_page(root_page.id.into());
+        self.print_page(root_page.id.into(), None);
+
+        for (&key, &value) in &self.pages {
+            println!(" {:?} {:?}", key, value);
+        }
 
         let mut table = Table::new();
         table.add_row(row!["PageSize", "value"]);
