@@ -45,12 +45,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let options = ancla::AnclaOptions::builder()
         .db_path(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("testdata")
-                .join("test1.db")
-                .to_str()
-                .unwrap()
-                .to_string(),
+            // Path::new(env!("CARGO_MANIFEST_DIR"))
+            //     .join("testdata")
+            //     .join("test1.db")
+            //     .to_str()
+            //     .unwrap()
+            //     .to_string(),
+            cli.db,
         )
         .build();
     let mut db = ancla::DB::build(options);
