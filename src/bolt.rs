@@ -54,9 +54,9 @@ impl From<u64> for Pgid {
     }
 }
 
-impl Into<u64> for Pgid {
-    fn into(self) -> u64 {
-        self.0
+impl From<Pgid> for u64 {
+    fn from(id: Pgid) -> u64 {
+        id.0
     }
 }
 
@@ -79,7 +79,7 @@ bitflags! {
 
 impl PageFlag {
     pub fn as_u16(&self) -> u16 {
-        self.bits() as u16
+        self.bits()
     }
 }
 

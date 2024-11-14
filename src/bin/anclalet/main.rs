@@ -1,6 +1,5 @@
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use std::error::Error;
-use std::path::Path;
 use std::result::Result;
 
 #[derive(Parser, Debug)]
@@ -16,6 +15,9 @@ struct Command {
 
     #[arg(short, long)]
     endian: Option<Endian>,
+
+    #[clap(subcommand)]
+    command: SubCommand,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -23,6 +25,15 @@ enum Endian {
     Little,
     Big,
 }
+
+#[derive(Debug, Subcommand)]
+enum SubCommand {
+    Buckets(BucketsArgs),
+    Pages {},
+}
+
+#[derive(Debug, Args)]
+struct BucketsArgs {}
 
 const fn is_target_little_endian() -> bool {
     // cfg!(target_endian = "little")
@@ -55,6 +66,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .build();
     let mut db = ancla::DB::build(options);
-    db.print_db();
+
+    match cli.command {
+        SubCommand::Buckets(_) => {
+            db.print_buckets();
+        }
+        SubCommand::Pages {} => {
+            db.print_db();
+        }
+    }
+
     Ok(())
 }
