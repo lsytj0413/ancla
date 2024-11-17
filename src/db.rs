@@ -68,9 +68,7 @@ impl DB {
     fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
         let data_len = 4096 * (overflow + 1) as usize;
         let mut data = vec![0u8; data_len];
-        self.file
-            .seek(io::SeekFrom::Start((page_id * 4096) as u64))
-            .unwrap();
+        self.file.seek(io::SeekFrom::Start(page_id * 4096)).unwrap();
         let size = self.file.read(data.as_mut_slice()).unwrap();
         if size != data_len {
             panic!(
@@ -81,10 +79,10 @@ impl DB {
         data
     }
 
-    fn read_page_u64(&mut self, page: &Vec<u8>, offset: u16) -> u64 {
+    fn read_page_u64(&mut self, page: &[u8], offset: u16) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
-            let offset_ptr = ptr.offset(offset as isize) as *const u8;
+            let offset_ptr = ptr.offset(offset as isize);
             let value_ptr = std::slice::from_raw_parts(offset_ptr, 8);
             u64::from_le_bytes(value_ptr.try_into().unwrap())
         }
@@ -148,7 +146,7 @@ impl DB {
 
     fn read_branch_element(
         &mut self,
-        page: &Vec<u8>,
+        page: &[u8],
         count: u16,
         page_id: u64,
         _parent_page_id: Option<u64>,
@@ -186,7 +184,7 @@ impl DB {
                 overflow: page.overflow as u64,
                 capacity: 4096 * (page.overflow + 1) as u64,
                 used: 0,
-                parent_page_id: parent_page_id,
+                parent_page_id,
             },
         );
 
@@ -214,7 +212,7 @@ impl DB {
         }
     }
 
-    fn for_leaf_page_element(&mut self, page: &Vec<u8>, count: u16, page_id: u64, f: fn(&Vec<u8>)) {
+    fn for_leaf_page_element(&mut self, page: &[u8], count: u16, page_id: u64, f: fn(&Vec<u8>)) {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let leaf_element: bolt::LeafPageElement =
@@ -254,13 +252,7 @@ impl DB {
         }
     }
 
-    fn for_branch_page_element(
-        &mut self,
-        page: &Vec<u8>,
-        count: u16,
-        page_id: u64,
-        f: fn(&Vec<u8>),
-    ) {
+    fn for_branch_page_element(&mut self, page: &[u8], count: u16, page_id: u64, f: fn(&Vec<u8>)) {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let branch_element: bolt::BranchPageElement =
@@ -372,7 +364,7 @@ impl DB {
 
         let data = self.read_page_overflow(meta.root_pgid.into(), 0);
         let root_page: bolt::Page = TryFrom::try_from(&data).unwrap();
-        if root_page.flags.as_u16() != 0x02 {
+        if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
             panic!("Invalid root page's type")
         }
 
@@ -437,7 +429,8 @@ impl DB {
 
         let data = self.read_page_overflow(meta.root_pgid.into(), 0);
         let root_page: bolt::Page = TryFrom::try_from(&data).unwrap();
-        if root_page.flags.as_u16() != 0x02 {
+        println!("root page: {:?}", root_page);
+        if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
             panic!("Invalid root page's type")
         }
         self.for_page_buckets(meta.root_pgid.into(), |bucket| {
