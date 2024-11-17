@@ -1,7 +1,7 @@
 use crate::{errors, utils};
 use bitflags::bitflags;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct Page {
     // is the identifier of the page, it start from 0,
@@ -23,10 +23,10 @@ pub(crate) struct Page {
     pub(crate) overflow: u32,
 }
 
-impl TryFrom<&Vec<u8>> for Page {
+impl TryFrom<&[u8]> for Page {
     type Error = errors::DatabaseError;
 
-    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
             return Err(errors::DatabaseError::TooSmallData {
                 expect: 16,
@@ -83,7 +83,7 @@ impl PageFlag {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct Meta {
     // The magic number of bolt database, must be MAGIC_NUMBER.
@@ -108,10 +108,10 @@ pub(crate) struct Meta {
     pub(crate) checksum: u64,
 }
 
-impl TryFrom<&Vec<u8>> for Meta {
+impl TryFrom<&[u8]> for Meta {
     type Error = errors::DatabaseError;
 
-    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 80 {
             return Err(errors::DatabaseError::TooSmallData {
                 expect: 80,
@@ -134,7 +134,7 @@ impl TryFrom<&Vec<u8>> for Meta {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct BranchPageElement {
     // pos is the offset of the element's data in the page,
@@ -146,10 +146,10 @@ pub(crate) struct BranchPageElement {
     pub(crate) pgid: Pgid,
 }
 
-impl TryFrom<&Vec<u8>> for BranchPageElement {
+impl TryFrom<&[u8]> for BranchPageElement {
     type Error = errors::DatabaseError;
 
-    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
             return Err(errors::DatabaseError::TooSmallData {
                 expect: 16,
@@ -165,7 +165,7 @@ impl TryFrom<&Vec<u8>> for BranchPageElement {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct LeafPageElement {
     // indicate what type of the element, if flags is 1, it's a bucket,
@@ -180,10 +180,10 @@ pub(crate) struct LeafPageElement {
     pub(crate) vsize: u32,
 }
 
-impl TryFrom<&Vec<u8>> for LeafPageElement {
+impl TryFrom<&[u8]> for LeafPageElement {
     type Error = errors::DatabaseError;
 
-    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
             return Err(errors::DatabaseError::TooSmallData {
                 expect: 16,
@@ -200,7 +200,7 @@ impl TryFrom<&Vec<u8>> for LeafPageElement {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 // Bucket represents the on-file representation of a bucket. It is stored as
 // the `value` of a bucket key. If the root is 0, this bucket is small enough
@@ -211,10 +211,10 @@ pub(crate) struct Bucket {
     sequence: u64,
 }
 
-impl TryFrom<&Vec<u8>> for Bucket {
+impl TryFrom<&[u8]> for Bucket {
     type Error = errors::DatabaseError;
 
-    fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
             return Err(errors::DatabaseError::TooSmallData {
                 expect: 16,

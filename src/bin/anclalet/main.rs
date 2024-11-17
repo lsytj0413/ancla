@@ -5,8 +5,6 @@ use std::result::Result;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Command {
-    db: String,
-
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
 
@@ -18,6 +16,8 @@ struct Command {
 
     #[clap(subcommand)]
     command: SubCommand,
+
+    db: String,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]

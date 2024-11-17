@@ -21,6 +21,8 @@ pub struct DB {
 
     pages: BTreeMap<bolt::Pgid, PageInfo>,
     page_datas: BTreeMap<bolt::Pgid, Vec<u8>>,
+    meta0: Option<bolt::Meta>,
+    meta1: Option<bolt::Meta>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,15 +41,13 @@ pub struct ItemInfo {
     pub typ: u64,
     pub key: Vec<u8>,
     pub value: Vec<u8>,
-    pub bucket: BucketInfo,
 }
 
 #[derive(Debug, Clone)]
-pub struct BucketInfo {
-    pub page: u64,
+pub struct Bucket {
+    pub page_id: u64,
     pub is_inline: bool,
-    pub key: Vec<u8>,
-    pub items: Vec<ItemInfo>,
+    pub name: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +64,25 @@ const MAGIC_NUMBER: u32 = 0xED0CDAED;
 // The data file format version.
 const DATAFILE_VERSION: u32 = 2;
 
+#[derive(Debug, Clone)]
+struct BranchElement {
+    key: Vec<u8>,
+    pgid: u64,
+}
+
+#[derive(Debug, Clone)]
+enum LeafElement {
+    Bucket { name: Vec<u8>, pgid: u64 },
+    InlineBucket { name: Vec<u8>, items: Vec<KeyValue> },
+    KeyValue(KeyValue),
+}
+
+#[derive(Debug, Clone)]
+struct KeyValue {
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
 impl DB {
     fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
         let data_len = 4096 * (overflow + 1) as usize;
@@ -79,6 +98,111 @@ impl DB {
         data
     }
 
+    fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
+        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+        let mut branch_elements: Vec<BranchElement> = Vec::with_capacity(page.count as usize);
+        for i in 0..page.count {
+            let start = (16 + i * 16) as usize;
+            let branch_element: bolt::BranchPageElement =
+                bolt::BranchPageElement::try_from(data.get(start..data.len()).unwrap()).unwrap();
+            let key_start = 16 + i * 16 + branch_element.pos as u16;
+            let key_data = data
+                .get((key_start as usize)..((key_start + branch_element.ksize as u16) as usize))
+                .unwrap();
+            branch_elements.push(BranchElement {
+                key: key_data.to_vec(),
+                pgid: branch_element.pgid.into(),
+            });
+        }
+        branch_elements
+    }
+
+    fn read_page_leaf_elements(&mut self, data: &[u8]) -> Vec<LeafElement> {
+        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+        let mut leaf_elements: Vec<LeafElement> = Vec::with_capacity(page.count as usize);
+        for i in 0..page.count {
+            let start = (16 + i * 16) as usize;
+            let leaf_element: bolt::LeafPageElement =
+                bolt::LeafPageElement::try_from(data.get(start..data.len()).unwrap()).unwrap();
+
+            let key_start = 16 + i * 16 + (leaf_element.pos as u16);
+            let key_end = key_start + (leaf_element.ksize as u16);
+            let key = data.get((key_start as usize)..(key_end as usize)).unwrap();
+            let value = data
+                .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
+                .unwrap();
+            if leaf_element.flags == 0x01 {
+                let bucket_page_id = self.read_page_u64(value, 0);
+                if bucket_page_id == 0 {
+                } else {
+                    leaf_elements.push(LeafElement::Bucket {
+                        name: key.to_vec(),
+                        pgid: bucket_page_id,
+                    });
+                }
+            } else {
+                leaf_elements.push(LeafElement::KeyValue(KeyValue {
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                }));
+            }
+        }
+        leaf_elements
+    }
+
+    fn read_meta_page(&mut self, data: &[u8]) -> bolt::Meta {
+        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+        if !page.flags.contains(bolt::PageFlag::MetaPageFlag) {
+            panic!(
+                "read_page_overflow: page 0 is not a meta page, expect flag {}, got {}",
+                bolt::PageFlag::MetaPageFlag.as_u16(),
+                page.flags.as_u16()
+            );
+        }
+        let actual_checksum =
+            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
+        let meta: bolt::Meta = TryFrom::try_from(data).unwrap();
+        if meta.checksum != actual_checksum {
+            panic!(
+                "checksum mismatch, expect {}, got {}",
+                actual_checksum, meta.checksum
+            );
+        }
+        meta
+    }
+
+    fn initialize(&mut self) {
+        let data0 = self.read_page_overflow(0, 0);
+        let meta0 = self.read_meta_page(&data0);
+        self.meta0 = Some(meta0);
+
+        let data1 = self.read_page_overflow(1, 0);
+        let meta1 = self.read_meta_page(&data1);
+        self.meta1 = Some(meta1);
+    }
+
+    fn get_meta(&mut self) -> bolt::Meta {
+        if self.meta0.is_none() && self.meta1.is_none() {
+            panic!("meta0 and meta1 are not initialized");
+        }
+
+        if self.meta0.is_none() {
+            return self.meta1.unwrap();
+        }
+
+        if self.meta1.is_none() {
+            return self.meta0.unwrap();
+        }
+
+        let tx0 = self.meta0.unwrap().txid;
+        let tx1 = self.meta1.unwrap().txid;
+        if tx0 > tx1 {
+            return self.meta0.unwrap();
+        }
+
+        self.meta1.unwrap()
+    }
+
     fn read_page_u64(&mut self, page: &[u8], offset: u16) -> u64 {
         let ptr: *const u8 = page.as_ptr();
         unsafe {
@@ -88,7 +212,7 @@ impl DB {
         }
     }
 
-    fn read_freelist(&mut self, page: &Vec<u8>, count: u16) -> Vec<u64> {
+    fn read_freelist(&mut self, page: &[u8], count: u16) -> Vec<u64> {
         let mut freelist: Vec<u64> = Vec::with_capacity(count as usize);
         for i in 0..count {
             freelist.push(self.read_page_u64(page, i * 8 + 16));
@@ -98,7 +222,7 @@ impl DB {
 
     fn read_leaf_element(
         &mut self,
-        page: &Vec<u8>,
+        page: &[u8],
         count: u16,
         page_id: u64,
         parent_page_id: Option<u64>,
@@ -106,8 +230,7 @@ impl DB {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let leaf_element: bolt::LeafPageElement =
-                bolt::LeafPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
-                    .unwrap();
+                bolt::LeafPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
 
             let key_start = 16 + i * 16 + (leaf_element.pos as u16);
             let key_end = key_start + (leaf_element.ksize as u16);
@@ -129,13 +252,13 @@ impl DB {
                 println!("bucket_page_id: {}", bucket_page_id);
                 if bucket_page_id == 0 {
                     // This is an inline bucket, so we need to read the bucket data
-                    let data = value[16..].to_vec();
-                    let page: bolt::Page = TryFrom::try_from(&data).unwrap();
+                    let data = &value[16..];
+                    let page: bolt::Page = TryFrom::try_from(data).unwrap();
                     println!(
                         "bucket_page_id: {}, page_count: {}",
                         bucket_page_id, page.count
                     );
-                    self.read_leaf_element(&data, page.count, page_id, parent_page_id);
+                    self.read_leaf_element(data, page.count, page_id, parent_page_id);
                     continue;
                 }
 
@@ -154,8 +277,7 @@ impl DB {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let branch_element: bolt::BranchPageElement =
-                bolt::BranchPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
-                    .unwrap();
+                bolt::BranchPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
             self.print_page(branch_element.pgid.into(), Some(page_id));
         }
     }
@@ -167,12 +289,14 @@ impl DB {
             file,
             pages: BTreeMap::new(),
             page_datas: BTreeMap::new(),
+            meta0: None,
+            meta1: None,
         }
     }
 
     pub fn print_page(&mut self, page_id: u64, parent_page_id: Option<u64>) {
         let data = self.read_page_overflow(page_id, 0);
-        let page: bolt::Page = TryFrom::try_from(&data).unwrap();
+        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         println!("print page: {:?}, {:?}", page, parent_page_id);
 
         let data = self.read_page_overflow(page_id, page.overflow);
@@ -197,27 +321,29 @@ impl DB {
         }
     }
 
-    fn for_page_buckets(&mut self, page_id: u64, f: fn(&Vec<u8>)) {
+    fn for_page_buckets(&mut self, page_id: u64, f: fn(bucket: &Bucket)) {
         let data = self.read_page_overflow(page_id, 0);
-        let page: bolt::Page = TryFrom::try_from(&data).unwrap();
-        println!("print page: {:?}", page);
+        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
 
         let data = self.read_page_overflow(page_id, page.overflow);
-        if page.flags.as_u16() == 0x02 {
-            // leaf page
+        if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
             self.for_leaf_page_element(&data, page.count, page_id, f);
-        } else if page.flags.as_u16() == 0x01 {
-            // branch page
+        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
             self.for_branch_page_element(&data, page.count, page_id, f);
         }
     }
 
-    fn for_leaf_page_element(&mut self, page: &[u8], count: u16, page_id: u64, f: fn(&Vec<u8>)) {
+    fn for_leaf_page_element(
+        &mut self,
+        page: &[u8],
+        count: u16,
+        page_id: u64,
+        f: fn(bucket: &Bucket),
+    ) {
         for i in 0..count {
             let start = (16 + i * 16) as usize;
             let leaf_element: bolt::LeafPageElement =
-                bolt::LeafPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
-                    .unwrap();
+                bolt::LeafPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
 
             let key_start = 16 + i * 16 + (leaf_element.pos as u16);
             let key_end = key_start + (leaf_element.ksize as u16);
@@ -252,34 +378,30 @@ impl DB {
         }
     }
 
-    fn for_branch_page_element(&mut self, page: &[u8], count: u16, page_id: u64, f: fn(&Vec<u8>)) {
-        for i in 0..count {
-            let start = (16 + i * 16) as usize;
-            let branch_element: bolt::BranchPageElement =
-                bolt::BranchPageElement::try_from(&page.get(start..page.len()).unwrap().to_vec())
-                    .unwrap();
-            self.for_page_buckets(branch_element.pgid.into(), f);
+    fn for_branch_page_element(
+        &mut self,
+        page: &[u8],
+        count: u16,
+        page_id: u64,
+        f: fn(bucket: &Bucket),
+    ) {
+        let branch_elements = self.read_page_branch_elements(page);
+        for elem in branch_elements {
+            let data = self.read_page_overflow(elem.pgid.into(), 0);
+            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+            let data = self.read_page_overflow(elem.pgid.into(), page.overflow);
+            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+                self.for_leaf_page_element(&data, page.count, page_id, f);
+            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+                self.for_branch_page_element(&data, page.count, page_id, f);
+            }
         }
     }
 
     pub fn print_db(&mut self) {
-        let data = self.read_page_overflow(0, 0);
-        let page0: bolt::Page = TryFrom::try_from(&data).unwrap();
-        println!("first page: {:?}", page0);
-        if page0.flags.as_u16() != 0x04 {
-            panic!("Invalid page 0's type")
-        }
+        self.initialize();
+        let meta = self.get_meta();
 
-        let new_checksum =
-            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
-        let meta0: bolt::Meta = TryFrom::try_from(&data).unwrap();
-        println!("first meta: {:?}", meta0);
-        if meta0.checksum != new_checksum {
-            panic!(
-                "Invalid page 0's checksum, {:0x} != {:0x}",
-                meta0.checksum, new_checksum
-            );
-        }
         self.pages.insert(
             bolt::Pgid(0),
             PageInfo {
@@ -291,21 +413,6 @@ impl DB {
                 parent_page_id: None,
             },
         );
-
-        let data = self.read_page_overflow(1, 0);
-        let page1: bolt::Page = TryFrom::try_from(&data).unwrap();
-        println!("second page: {:?}", page1);
-        if page1.flags.as_u16() != 0x04 {
-            panic!("Invalid page 0's type")
-        }
-
-        let meta1: bolt::Meta = TryFrom::try_from(&data).unwrap();
-        println!("second meta: {:?}", meta1);
-        let (page, meta) = if meta1.txid > meta0.txid {
-            (page1, meta1)
-        } else {
-            (page0, meta0)
-        };
         self.pages.insert(
             bolt::Pgid(1),
             PageInfo {
@@ -318,9 +425,9 @@ impl DB {
             },
         );
 
-        println!("Active root page: {:?} {:?}", page, meta);
+        println!("Active root page: {:?}", meta);
         let data = self.read_page_overflow(meta.freelist_pgid.into(), 0);
-        let freelist_page: bolt::Page = TryFrom::try_from(&data).unwrap();
+        let freelist_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         if !freelist_page
             .flags
             .contains(bolt::PageFlag::FreelistPageFlag)
@@ -363,7 +470,7 @@ impl DB {
         println!("Freelist: {:?}", freelist);
 
         let data = self.read_page_overflow(meta.root_pgid.into(), 0);
-        let root_page: bolt::Page = TryFrom::try_from(&data).unwrap();
+        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
             panic!("Invalid root page's type")
         }
@@ -391,44 +498,29 @@ impl DB {
             .unwrap();
     }
 
-    pub fn print_buckets(&mut self) {
-        let data = self.read_page_overflow(0, 0);
-        let page0: bolt::Page = TryFrom::try_from(&data).unwrap();
-        println!("first page: {:?}", page0);
-        if page0.flags.as_u16() != 0x04 {
-            panic!("Invalid page 0's type")
-        }
-
-        let new_checksum =
-            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
-        let meta0: bolt::Meta = TryFrom::try_from(&data).unwrap();
-        println!("first meta: {:?}", meta0);
-        if meta0.checksum != new_checksum {
-            panic!(
-                "Invalid page 0's checksum, {:0x} != {:0x}",
-                meta0.checksum, new_checksum
-            );
-        }
-
-        let data = self.read_page_overflow(1, 0);
-        let page1: bolt::Page = TryFrom::try_from(&data).unwrap();
-        println!("second page: {:?}", page1);
-        if page1.flags.as_u16() != 0x04 {
-            panic!("Invalid page 0's type")
-        }
-
-        let meta1: bolt::Meta = TryFrom::try_from(&data).unwrap();
-        println!("second meta: {:?}", meta1);
-        let (page, meta) = if meta1.txid > meta0.txid {
-            (page1, meta1)
-        } else {
-            (page0, meta0)
-        };
-
-        println!("Active root page: {:?} {:?}", page, meta);
+    pub fn for_buckets(&mut self, f: fn(bucket: &Bucket)) {
+        self.initialize();
+        let meta = self.get_meta();
 
         let data = self.read_page_overflow(meta.root_pgid.into(), 0);
-        let root_page: bolt::Page = TryFrom::try_from(&data).unwrap();
+        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+        if !(root_page.flags.contains(bolt::PageFlag::BranchPageFlag)
+            || root_page.flags.contains(bolt::PageFlag::LeafPageFlag))
+        {
+            panic!("Invalid root page type, got {}", root_page.flags.as_u16())
+        }
+
+        self.for_page_buckets(meta.root_pgid.into(), f);
+    }
+
+    pub fn print_buckets(&mut self) {
+        self.initialize();
+        let meta = self.get_meta();
+
+        println!("Active root page: {:?}", meta);
+
+        let data = self.read_page_overflow(meta.root_pgid.into(), 0);
+        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         println!("root page: {:?}", root_page);
         if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
             panic!("Invalid root page's type")
