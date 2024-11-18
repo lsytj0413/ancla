@@ -69,7 +69,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         SubCommand::Buckets(_) => {
-            db.print_buckets();
+            db.for_buckets(|bucket| {
+                println!(
+                    "{}, {}, {}",
+                    bucket.page_id,
+                    bucket.is_inline,
+                    String::from_utf8(bucket.name.clone()).unwrap()
+                );
+            });
         }
         SubCommand::Pages {} => {
             db.print_db();

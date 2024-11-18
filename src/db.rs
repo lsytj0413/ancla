@@ -58,12 +58,6 @@ pub enum PageType {
     FreePage,
 }
 
-// Represents a marker value to indicate that a file is a Bolt DB.
-const MAGIC_NUMBER: u32 = 0xED0CDAED;
-
-// The data file format version.
-const DATAFILE_VERSION: u32 = 2;
-
 #[derive(Debug, Clone)]
 struct BranchElement {
     key: Vec<u8>,
@@ -134,6 +128,17 @@ impl DB {
             if leaf_element.flags == 0x01 {
                 let bucket_page_id = self.read_page_u64(value, 0);
                 if bucket_page_id == 0 {
+                    let page_leaf_elements = self.read_page_leaf_elements(value);
+                    leaf_elements.push(LeafElement::InlineBucket {
+                        name: key.to_vec(),
+                        items: page_leaf_elements
+                            .into_iter()
+                            .map(|x| match x {
+                                LeafElement::KeyValue(kv) => kv,
+                                _ => panic!("unreachable"),
+                            })
+                            .collect(),
+                    });
                 } else {
                     leaf_elements.push(LeafElement::Bucket {
                         name: key.to_vec(),
@@ -340,40 +345,23 @@ impl DB {
         page_id: u64,
         f: fn(bucket: &Bucket),
     ) {
-        for i in 0..count {
-            let start = (16 + i * 16) as usize;
-            let leaf_element: bolt::LeafPageElement =
-                bolt::LeafPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
-
-            let key_start = 16 + i * 16 + (leaf_element.pos as u16);
-            let key_end = key_start + (leaf_element.ksize as u16);
-            let key = page.get((key_start as usize)..(key_end as usize)).unwrap();
-            let value = page
-                .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
-                .unwrap();
-            println!(
-                "flag: {}, key: {}, value: {}, key_size: {}, value_size: {}",
-                leaf_element.flags,
-                String::from_utf8(key.to_vec()).unwrap(),
-                String::from_utf8(value.to_vec()).unwrap(),
-                leaf_element.ksize,
-                leaf_element.vsize,
-            );
-
-            if leaf_element.flags == 0x01 {
-                f(&page
-                    .get((key_start as usize)..(key_end as usize))
-                    .unwrap()
-                    .to_vec());
-
-                let bucket_page_id = self.read_page_u64(&Vec::from(value), 0);
-                println!("bucket_page_id: {}", bucket_page_id);
-                if bucket_page_id == 0 {
-                    // This is an inline bucket, so we need to read the bucket data
-                    continue;
+        let leaf_elements = self.read_page_leaf_elements(page);
+        for elem in leaf_elements {
+            match elem {
+                LeafElement::Bucket { name, pgid } => {
+                    f(&Bucket {
+                        is_inline: false,
+                        page_id: pgid,
+                        name,
+                    });
+                    self.for_page_buckets(pgid, f);
                 }
-
-                self.for_page_buckets(bucket_page_id, f);
+                LeafElement::InlineBucket { name, items: _ } => f(&Bucket {
+                    is_inline: true,
+                    page_id: 0,
+                    name,
+                }),
+                LeafElement::KeyValue(_) => {}
             }
         }
     }
@@ -387,9 +375,9 @@ impl DB {
     ) {
         let branch_elements = self.read_page_branch_elements(page);
         for elem in branch_elements {
-            let data = self.read_page_overflow(elem.pgid.into(), 0);
+            let data = self.read_page_overflow(elem.pgid, 0);
             let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-            let data = self.read_page_overflow(elem.pgid.into(), page.overflow);
+            let data = self.read_page_overflow(elem.pgid, page.overflow);
             if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
                 self.for_leaf_page_element(&data, page.count, page_id, f);
             } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
@@ -511,23 +499,6 @@ impl DB {
         }
 
         self.for_page_buckets(meta.root_pgid.into(), f);
-    }
-
-    pub fn print_buckets(&mut self) {
-        self.initialize();
-        let meta = self.get_meta();
-
-        println!("Active root page: {:?}", meta);
-
-        let data = self.read_page_overflow(meta.root_pgid.into(), 0);
-        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        println!("root page: {:?}", root_page);
-        if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
-            panic!("Invalid root page's type")
-        }
-        self.for_page_buckets(meta.root_pgid.into(), |bucket| {
-            println!("bucket: {:?}", String::from_utf8(bucket.to_vec()).unwrap());
-        });
     }
 }
 

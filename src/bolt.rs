@@ -228,3 +228,9 @@ impl TryFrom<&[u8]> for Bucket {
         })
     }
 }
+
+// Represents a marker value to indicate that a file is a Bolt DB.
+pub(crate) const MAGIC_NUMBER: u32 = 0xED0CDAED;
+
+// The data file format version.
+pub(crate) const DATAFILE_VERSION: u32 = 2;
