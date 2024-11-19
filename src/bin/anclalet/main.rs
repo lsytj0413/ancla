@@ -69,14 +69,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         SubCommand::Buckets(_) => {
-            db.for_buckets(|bucket| {
+            // db.for_buckets(|bucket| {
+            //     println!(
+            //         "{}, {}, {}",
+            //         bucket.page_id,
+            //         bucket.is_inline,
+            //         String::from_utf8(bucket.name.clone()).unwrap()
+            //     );
+            // });
+
+            let mut buckets: Vec<ancla::Bucket> = Vec::new();
+            for bucket in db.iter_buckets() {
+                buckets.push(bucket.clone());
+            }
+
+            loop {
+                if buckets.is_empty() {
+                    return Ok(());
+                }
+
+                let bucket = buckets.remove(0);
                 println!(
                     "{}, {}, {}",
                     bucket.page_id,
                     bucket.is_inline,
                     String::from_utf8(bucket.name.clone()).unwrap()
                 );
-            });
+
+                for item in bucket.iter_buckets(&mut db) {
+                    buckets.push(item);
+                }
+            }
         }
         SubCommand::Pages {} => {
             db.print_db();

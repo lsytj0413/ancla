@@ -1,11 +1,14 @@
 use crate::bolt;
+use bitflags::iter::Iter;
 use bitflags::Flags;
 use fnv_rs::{Fnv64, FnvHasher};
 use prettytable::Table;
+use std::ops::IndexMut;
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, Read, Seek},
+    ops::Index,
 };
 
 use tui::{
@@ -45,9 +48,31 @@ pub struct ItemInfo {
 
 #[derive(Debug, Clone)]
 pub struct Bucket {
+    pub parent_bucket: Vec<u8>,
     pub page_id: u64,
     pub is_inline: bool,
     pub name: Vec<u8>,
+}
+
+impl Bucket {
+    pub fn iter_buckets<'a>(&self, db: &'a mut DB) -> impl Iterator<Item = Bucket> + 'a {
+        if self.is_inline {
+            return BucketIterator {
+                db,
+                parent_bucket: Some(self.clone()),
+                stack: Vec::new(),
+            };
+        }
+
+        BucketIterator {
+            db,
+            parent_bucket: Some(self.clone()),
+            stack: vec![IterItem {
+                page_id: From::from(self.page_id),
+                index: 0,
+            }],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -171,6 +196,20 @@ impl DB {
             panic!(
                 "checksum mismatch, expect {}, got {}",
                 actual_checksum, meta.checksum
+            );
+        }
+        if meta.magic != bolt::MAGIC_NUMBER {
+            panic!(
+                "invalid magic number, expect {}, got {}",
+                bolt::MAGIC_NUMBER,
+                meta.magic
+            );
+        }
+        if meta.version != bolt::DATAFILE_VERSION {
+            panic!(
+                "invalid version number, expect {}, got {}",
+                bolt::DATAFILE_VERSION,
+                meta.version
             );
         }
         meta
@@ -350,6 +389,7 @@ impl DB {
             match elem {
                 LeafElement::Bucket { name, pgid } => {
                     f(&Bucket {
+                        parent_bucket: vec![],
                         is_inline: false,
                         page_id: pgid,
                         name,
@@ -357,6 +397,7 @@ impl DB {
                     self.for_page_buckets(pgid, f);
                 }
                 LeafElement::InlineBucket { name, items: _ } => f(&Bucket {
+                    parent_bucket: vec![],
                     is_inline: true,
                     page_id: 0,
                     name,
@@ -499,6 +540,96 @@ impl DB {
         }
 
         self.for_page_buckets(meta.root_pgid.into(), f);
+    }
+
+    pub fn iter_buckets(&mut self) -> impl Iterator<Item = Bucket> + '_ {
+        self.initialize();
+        let meta = self.get_meta();
+
+        BucketIterator {
+            db: self,
+            parent_bucket: None,
+            stack: vec![IterItem {
+                page_id: meta.root_pgid,
+                index: 0,
+            }],
+        }
+    }
+}
+
+struct BucketIterator<'a> {
+    db: &'a mut DB,
+    parent_bucket: Option<Bucket>,
+    stack: Vec<IterItem>,
+}
+
+struct IterItem {
+    page_id: bolt::Pgid,
+    index: usize,
+}
+
+impl<'a> Iterator for BucketIterator<'a> {
+    type Item = Bucket;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.stack.is_empty() {
+                return None;
+            }
+
+            let item = self.stack.index_mut(self.stack.len() - 1);
+            let data = self.db.read_page_overflow(item.page_id.into(), 0);
+            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+            let data = self
+                .db
+                .read_page_overflow(item.page_id.into(), page.overflow);
+            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+                let leaf_elements = self.db.read_page_leaf_elements(&data);
+                if item.index < leaf_elements.len() {
+                    let elem = leaf_elements[item.index].clone();
+                    item.index += 1;
+                    match elem {
+                        LeafElement::Bucket { name, pgid } => {
+                            return Some(Bucket {
+                                parent_bucket: self
+                                    .parent_bucket
+                                    .as_ref()
+                                    .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                is_inline: false,
+                                page_id: pgid,
+                                name,
+                            });
+                        }
+                        LeafElement::InlineBucket { name, items: _ } => {
+                            return Some(Bucket {
+                                parent_bucket: self
+                                    .parent_bucket
+                                    .as_ref()
+                                    .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                is_inline: true,
+                                page_id: 0,
+                                name,
+                            });
+                        }
+                        LeafElement::KeyValue(_) => {}
+                    }
+                } else {
+                    self.stack.pop();
+                }
+            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+                let branch_elements = self.db.read_page_branch_elements(&data);
+                if item.index < branch_elements.len() {
+                    let elem = branch_elements[item.index].clone();
+                    item.index += 1;
+                    self.stack.push(IterItem {
+                        page_id: From::from(elem.pgid),
+                        index: 0,
+                    });
+                } else {
+                    self.stack.pop();
+                }
+            }
+        }
     }
 }
 
