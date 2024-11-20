@@ -78,10 +78,10 @@ impl Bucket {
 
 #[derive(Debug, Clone, Copy)]
 pub enum PageType {
-    MetaPage,
-    DataPage,
-    FreelistPage,
-    FreePage,
+    Meta,
+    Data,
+    Freelist,
+    Free,
 }
 
 #[derive(Debug, Clone)]
@@ -104,20 +104,6 @@ struct KeyValue {
 }
 
 impl DB {
-    // fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
-    //     let data_len = 4096 * (overflow + 1) as usize;
-    //     let mut data = vec![0u8; data_len];
-    //     self.file.seek(io::SeekFrom::Start(page_id * 4096)).unwrap();
-    //     let size = self.file.read(data.as_mut_slice()).unwrap();
-    //     if size != data_len {
-    //         panic!(
-    //             "read_page_overflow: read {} bytes, expected {}",
-    //             size, data_len
-    //         );
-    //     }
-    //     data
-    // }
-
     fn read(&mut self, start: u64, size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
         self.file.seek(io::SeekFrom::Start(start)).unwrap();
@@ -143,6 +129,8 @@ impl DB {
             .insert(From::from(page_id), Arc::clone(&data));
         Arc::clone(&data)
     }
+
+    fn read_page_elements(&mut self, page_id: u64) {}
 
     fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
         let page: bolt::Page = TryFrom::try_from(data).unwrap();
@@ -372,7 +360,7 @@ impl DB {
             bolt::Pgid(page_id),
             PageInfo {
                 id: page_id,
-                typ: PageType::DataPage,
+                typ: PageType::Data,
                 overflow: page.overflow as u64,
                 capacity: 4096 * (page.overflow + 1) as u64,
                 used: 0,
@@ -389,67 +377,6 @@ impl DB {
         }
     }
 
-    fn for_page_buckets(&mut self, page_id: u64, f: fn(bucket: &Bucket)) {
-        let data = self.read_page(page_id);
-        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-
-        if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-            self.for_leaf_page_element(&data, page.count, page_id, f);
-        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-            self.for_branch_page_element(&data, page.count, page_id, f);
-        }
-    }
-
-    fn for_leaf_page_element(
-        &mut self,
-        page: &[u8],
-        count: u16,
-        page_id: u64,
-        f: fn(bucket: &Bucket),
-    ) {
-        let leaf_elements = self.read_page_leaf_elements(page);
-        for elem in leaf_elements {
-            match elem {
-                LeafElement::Bucket { name, pgid } => {
-                    f(&Bucket {
-                        parent_bucket: vec![],
-                        is_inline: false,
-                        page_id: pgid,
-                        name,
-                    });
-                    self.for_page_buckets(pgid, f);
-                }
-                LeafElement::InlineBucket { name, items: _ } => f(&Bucket {
-                    parent_bucket: vec![],
-                    is_inline: true,
-                    page_id: 0,
-                    name,
-                }),
-                LeafElement::KeyValue(_) => {}
-            }
-        }
-    }
-
-    fn for_branch_page_element(
-        &mut self,
-        page: &[u8],
-        count: u16,
-        page_id: u64,
-        f: fn(bucket: &Bucket),
-    ) {
-        let branch_elements = self.read_page_branch_elements(page);
-        for elem in branch_elements {
-            let data = self.read_page(elem.pgid);
-            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-
-            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-                self.for_leaf_page_element(&data, page.count, page_id, f);
-            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-                self.for_branch_page_element(&data, page.count, page_id, f);
-            }
-        }
-    }
-
     pub fn print_db(&mut self) {
         self.initialize();
         let meta = self.get_meta();
@@ -458,7 +385,7 @@ impl DB {
             bolt::Pgid(0),
             PageInfo {
                 id: 0,
-                typ: PageType::MetaPage,
+                typ: PageType::Meta,
                 overflow: 0,
                 capacity: 4096,
                 used: 80,
@@ -469,7 +396,7 @@ impl DB {
             bolt::Pgid(1),
             PageInfo {
                 id: 1,
-                typ: PageType::MetaPage,
+                typ: PageType::Meta,
                 overflow: 0,
                 capacity: 4096,
                 used: 80,
@@ -493,7 +420,7 @@ impl DB {
             bolt::Pgid(meta.freelist_pgid.into()),
             PageInfo {
                 id: meta.freelist_pgid.into(),
-                typ: PageType::FreelistPage,
+                typ: PageType::Freelist,
                 overflow: freelist_page.overflow as u64,
                 capacity: 4096,
                 used: 16 + (freelist_page.count as u64 * 8),
@@ -510,7 +437,7 @@ impl DB {
                 bolt::Pgid(i),
                 PageInfo {
                     id: i,
-                    typ: PageType::FreePage,
+                    typ: PageType::Free,
                     overflow: 0,
                     capacity: 4096,
                     used: 0,
@@ -561,6 +488,31 @@ impl DB {
                 index: 0,
             }],
         }
+    }
+
+    pub fn iter_pages(&mut self) -> impl Iterator<Item = PageInfo> {
+        self.initialize();
+        let meta = self.get_meta();
+
+        let pages = vec![
+            PageInfo {
+                id: 0,
+                typ: PageType::Meta,
+                overflow: 0,
+                capacity: 4096,
+                used: 80,
+                parent_page_id: None,
+            },
+            PageInfo {
+                id: 1,
+                typ: PageType::Meta,
+                overflow: 0,
+                capacity: 4096,
+                used: 80,
+                parent_page_id: None,
+            },
+        ];
+        pages.into_iter()
     }
 }
 

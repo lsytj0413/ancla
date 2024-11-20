@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::result::Result;
 
@@ -40,6 +41,55 @@ const fn is_target_little_endian() -> bool {
     u16::from_ne_bytes([1, 0]) == 1
 }
 
+struct Bucket {
+    name: Vec<u8>,
+    page_id: u64,
+    is_inline: bool,
+    child_buckets: Vec<Bucket>,
+}
+
+fn iter_buckets_inner(db: &mut ancla::DB, bucket: &ancla::Bucket) -> Vec<Bucket> {
+    let mut buckets: Vec<Bucket> = Vec::new();
+
+    let child_buckets: Vec<ancla::Bucket> = bucket.iter_buckets(db).collect();
+    for child_bucket in child_buckets {
+        buckets.push(Bucket {
+            name: bucket.name.clone(),
+            page_id: bucket.page_id,
+            is_inline: bucket.is_inline,
+            child_buckets: iter_buckets_inner(db, &child_bucket),
+        })
+    }
+
+    buckets
+}
+
+fn iter_buckets(db: &mut ancla::DB) -> Vec<Bucket> {
+    let buckets: Vec<ancla::Bucket> = db.iter_buckets().collect();
+    buckets
+        .iter()
+        .map(|bucket| Bucket {
+            name: bucket.name.clone(),
+            page_id: bucket.page_id,
+            is_inline: bucket.is_inline,
+            child_buckets: iter_buckets_inner(db, bucket),
+        })
+        .collect()
+}
+
+fn print_buckets(buckets: &Vec<Bucket>, level: usize) {
+    for bucket in buckets {
+        println!(
+            "{}{}, {}, {}",
+            '-'.to_string().repeat(level),
+            String::from_utf8(bucket.name.clone()).unwrap(),
+            bucket.is_inline,
+            bucket.page_id
+        );
+        print_buckets(&bucket.child_buckets, level + 2);
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut cli = Command::parse();
 
@@ -69,28 +119,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         SubCommand::Buckets(_) => {
-            let mut buckets: Vec<ancla::Bucket> = Vec::new();
-            for bucket in db.iter_buckets() {
-                buckets.push(bucket.clone());
-            }
-
-            loop {
-                if buckets.is_empty() {
-                    return Ok(());
-                }
-
-                let bucket = buckets.remove(0);
-                println!(
-                    "{}, {}, {}",
-                    bucket.page_id,
-                    bucket.is_inline,
-                    String::from_utf8(bucket.name.clone()).unwrap()
-                );
-
-                for item in bucket.iter_buckets(&mut db) {
-                    buckets.push(item);
-                }
-            }
+            let buckets = iter_buckets(&mut db);
+            print_buckets(&buckets, 0);
         }
         SubCommand::Pages {} => {
             db.print_db();
