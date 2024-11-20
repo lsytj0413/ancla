@@ -23,6 +23,8 @@ pub(crate) struct Page {
     pub(crate) overflow: u32,
 }
 
+pub(crate) const PAGE_HEADER_SIZE: usize = 16;
+
 impl TryFrom<&[u8]> for Page {
     type Error = errors::DatabaseError;
 

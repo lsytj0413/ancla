@@ -1,9 +1,10 @@
-use crate::bolt;
+use crate::bolt::{self, PAGE_HEADER_SIZE};
 use bitflags::iter::Iter;
 use bitflags::Flags;
 use fnv_rs::{Fnv64, FnvHasher};
 use prettytable::Table;
-use std::ops::IndexMut;
+use std::ops::{Deref, IndexMut};
+use std::sync::Arc;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -23,7 +24,7 @@ pub struct DB {
     file: File,
 
     pages: BTreeMap<bolt::Pgid, PageInfo>,
-    page_datas: BTreeMap<bolt::Pgid, Vec<u8>>,
+    page_datas: BTreeMap<bolt::Pgid, Arc<Vec<u8>>>,
     meta0: Option<bolt::Meta>,
     meta1: Option<bolt::Meta>,
 }
@@ -103,18 +104,44 @@ struct KeyValue {
 }
 
 impl DB {
-    fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
-        let data_len = 4096 * (overflow + 1) as usize;
-        let mut data = vec![0u8; data_len];
-        self.file.seek(io::SeekFrom::Start(page_id * 4096)).unwrap();
-        let size = self.file.read(data.as_mut_slice()).unwrap();
-        if size != data_len {
-            panic!(
-                "read_page_overflow: read {} bytes, expected {}",
-                size, data_len
-            );
+    // fn read_page_overflow(&mut self, page_id: u64, overflow: u32) -> Vec<u8> {
+    //     let data_len = 4096 * (overflow + 1) as usize;
+    //     let mut data = vec![0u8; data_len];
+    //     self.file.seek(io::SeekFrom::Start(page_id * 4096)).unwrap();
+    //     let size = self.file.read(data.as_mut_slice()).unwrap();
+    //     if size != data_len {
+    //         panic!(
+    //             "read_page_overflow: read {} bytes, expected {}",
+    //             size, data_len
+    //         );
+    //     }
+    //     data
+    // }
+
+    fn read(&mut self, start: u64, size: usize) -> Vec<u8> {
+        let mut data = vec![0u8; size];
+        self.file.seek(io::SeekFrom::Start(start)).unwrap();
+        let read_size = self.file.read(data.as_mut_slice()).unwrap();
+        if read_size != size {
+            panic!("read {} bytes, expected {}", read_size, size);
         }
         data
+    }
+
+    fn read_page(&mut self, page_id: u64) -> Arc<Vec<u8>> {
+        if let Some(data) = self.page_datas.get(&From::from(page_id)) {
+            return Arc::clone(data);
+        }
+
+        let data = self.read(page_id * 4096, PAGE_HEADER_SIZE);
+        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+
+        let data_len = 4096 * (page.overflow + 1) as usize;
+        let data = self.read(page_id * 4096, data_len);
+        let data = Arc::new(data);
+        self.page_datas
+            .insert(From::from(page_id), Arc::clone(&data));
+        Arc::clone(&data)
     }
 
     fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
@@ -216,11 +243,11 @@ impl DB {
     }
 
     fn initialize(&mut self) {
-        let data0 = self.read_page_overflow(0, 0);
+        let data0 = self.read_page(0);
         let meta0 = self.read_meta_page(&data0);
         self.meta0 = Some(meta0);
 
-        let data1 = self.read_page_overflow(1, 0);
+        let data1 = self.read_page(1);
         let meta1 = self.read_meta_page(&data1);
         self.meta1 = Some(meta1);
     }
@@ -339,11 +366,8 @@ impl DB {
     }
 
     pub fn print_page(&mut self, page_id: u64, parent_page_id: Option<u64>) {
-        let data = self.read_page_overflow(page_id, 0);
+        let data = self.read_page(page_id);
         let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        println!("print page: {:?}, {:?}", page, parent_page_id);
-
-        let data = self.read_page_overflow(page_id, page.overflow);
         self.pages.insert(
             bolt::Pgid(page_id),
             PageInfo {
@@ -366,10 +390,9 @@ impl DB {
     }
 
     fn for_page_buckets(&mut self, page_id: u64, f: fn(bucket: &Bucket)) {
-        let data = self.read_page_overflow(page_id, 0);
+        let data = self.read_page(page_id);
         let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
 
-        let data = self.read_page_overflow(page_id, page.overflow);
         if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
             self.for_leaf_page_element(&data, page.count, page_id, f);
         } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
@@ -416,9 +439,9 @@ impl DB {
     ) {
         let branch_elements = self.read_page_branch_elements(page);
         for elem in branch_elements {
-            let data = self.read_page_overflow(elem.pgid, 0);
+            let data = self.read_page(elem.pgid);
             let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-            let data = self.read_page_overflow(elem.pgid, page.overflow);
+
             if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
                 self.for_leaf_page_element(&data, page.count, page_id, f);
             } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
@@ -455,7 +478,7 @@ impl DB {
         );
 
         println!("Active root page: {:?}", meta);
-        let data = self.read_page_overflow(meta.freelist_pgid.into(), 0);
+        let data = self.read_page(meta.freelist_pgid.into());
         let freelist_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         if !freelist_page
             .flags
@@ -478,7 +501,6 @@ impl DB {
             },
         );
 
-        let data = self.read_page_overflow(meta.freelist_pgid.into(), freelist_page.overflow);
         let freelist = self.read_freelist(&data, freelist_page.count);
         // See
         // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
@@ -498,7 +520,7 @@ impl DB {
         }
         println!("Freelist: {:?}", freelist);
 
-        let data = self.read_page_overflow(meta.root_pgid.into(), 0);
+        let data = self.read_page(meta.root_pgid.into());
         let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
             panic!("Invalid root page's type")
@@ -525,21 +547,6 @@ impl DB {
                 f.render_widget(block, size);
             })
             .unwrap();
-    }
-
-    pub fn for_buckets(&mut self, f: fn(bucket: &Bucket)) {
-        self.initialize();
-        let meta = self.get_meta();
-
-        let data = self.read_page_overflow(meta.root_pgid.into(), 0);
-        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        if !(root_page.flags.contains(bolt::PageFlag::BranchPageFlag)
-            || root_page.flags.contains(bolt::PageFlag::LeafPageFlag))
-        {
-            panic!("Invalid root page type, got {}", root_page.flags.as_u16())
-        }
-
-        self.for_page_buckets(meta.root_pgid.into(), f);
     }
 
     pub fn iter_buckets(&mut self) -> impl Iterator<Item = Bucket> + '_ {
@@ -578,11 +585,8 @@ impl<'a> Iterator for BucketIterator<'a> {
             }
 
             let item = self.stack.index_mut(self.stack.len() - 1);
-            let data = self.db.read_page_overflow(item.page_id.into(), 0);
+            let data = self.db.read_page(item.page_id.into());
             let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-            let data = self
-                .db
-                .read_page_overflow(item.page_id.into(), page.overflow);
             if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
                 let leaf_elements = self.db.read_page_leaf_elements(&data);
                 if item.index < leaf_elements.len() {
@@ -613,9 +617,10 @@ impl<'a> Iterator for BucketIterator<'a> {
                         }
                         LeafElement::KeyValue(_) => {}
                     }
-                } else {
-                    self.stack.pop();
+                    continue;
                 }
+
+                self.stack.pop();
             } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
                 let branch_elements = self.db.read_page_branch_elements(&data);
                 if item.index < branch_elements.len() {
@@ -625,9 +630,10 @@ impl<'a> Iterator for BucketIterator<'a> {
                         page_id: From::from(elem.pgid),
                         index: 0,
                     });
-                } else {
-                    self.stack.pop();
+                    continue;
                 }
+
+                self.stack.pop();
             }
         }
     }

@@ -69,15 +69,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         SubCommand::Buckets(_) => {
-            // db.for_buckets(|bucket| {
-            //     println!(
-            //         "{}, {}, {}",
-            //         bucket.page_id,
-            //         bucket.is_inline,
-            //         String::from_utf8(bucket.name.clone()).unwrap()
-            //     );
-            // });
-
             let mut buckets: Vec<ancla::Bucket> = Vec::new();
             for bucket in db.iter_buckets() {
                 buckets.push(bucket.clone());
