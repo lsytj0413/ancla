@@ -31,7 +31,7 @@ pub struct DB {
     meta1: Option<bolt::Meta>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PageInfo {
     pub id: u64,
     pub typ: PageType,
@@ -41,12 +41,16 @@ pub struct PageInfo {
     pub parent_page_id: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ItemInfo {
-    pub page: u64,
-    pub typ: u64,
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+impl Ord for PageInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialOrd for PageInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Clone)]
@@ -79,10 +83,11 @@ impl Bucket {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PageType {
     Meta,
-    Data,
+    DataLeaf,
+    DataBranch,
     Freelist,
     Free,
 }
@@ -132,8 +137,6 @@ impl DB {
             .insert(From::from(page_id), Arc::clone(&data));
         Arc::clone(&data)
     }
-
-    fn read_page_elements(&mut self, page_id: u64) {}
 
     fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
         let page: bolt::Page = TryFrom::try_from(data).unwrap();
@@ -282,68 +285,6 @@ impl DB {
         freelist
     }
 
-    fn read_leaf_element(
-        &mut self,
-        page: &[u8],
-        count: u16,
-        page_id: u64,
-        parent_page_id: Option<u64>,
-    ) {
-        for i in 0..count {
-            let start = (16 + i * 16) as usize;
-            let leaf_element: bolt::LeafPageElement =
-                bolt::LeafPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
-
-            let key_start = 16 + i * 16 + (leaf_element.pos as u16);
-            let key_end = key_start + (leaf_element.ksize as u16);
-            let key = page.get((key_start as usize)..(key_end as usize)).unwrap();
-            let value = page
-                .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
-                .unwrap();
-            println!(
-                "flag: {}, key: {}, value: {}, key_size: {}, value_size: {}",
-                leaf_element.flags,
-                String::from_utf8(key.to_vec()).unwrap(),
-                String::from_utf8(value.to_vec()).unwrap(),
-                leaf_element.ksize,
-                leaf_element.vsize,
-            );
-
-            if leaf_element.flags == 0x01 {
-                let bucket_page_id = self.read_page_u64(&Vec::from(value), 0);
-                println!("bucket_page_id: {}", bucket_page_id);
-                if bucket_page_id == 0 {
-                    // This is an inline bucket, so we need to read the bucket data
-                    let data = &value[16..];
-                    let page: bolt::Page = TryFrom::try_from(data).unwrap();
-                    println!(
-                        "bucket_page_id: {}, page_count: {}",
-                        bucket_page_id, page.count
-                    );
-                    self.read_leaf_element(data, page.count, page_id, parent_page_id);
-                    continue;
-                }
-
-                self.print_page(bucket_page_id, Some(page_id));
-            }
-        }
-    }
-
-    fn read_branch_element(
-        &mut self,
-        page: &[u8],
-        count: u16,
-        page_id: u64,
-        _parent_page_id: Option<u64>,
-    ) {
-        for i in 0..count {
-            let start = (16 + i * 16) as usize;
-            let branch_element: bolt::BranchPageElement =
-                bolt::BranchPageElement::try_from(page.get(start..page.len()).unwrap()).unwrap();
-            self.print_page(branch_element.pgid.into(), Some(page_id));
-        }
-    }
-
     pub fn build(ancla_options: AnclaOptions) -> Rc<RefCell<DB>> {
         let file = File::open(ancla_options.db_path.clone()).unwrap();
         Rc::new(RefCell::new(DB {
@@ -354,129 +295,6 @@ impl DB {
             meta0: None,
             meta1: None,
         }))
-    }
-
-    pub fn print_page(&mut self, page_id: u64, parent_page_id: Option<u64>) {
-        let data = self.read_page(page_id);
-        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        self.pages.insert(
-            bolt::Pgid(page_id),
-            PageInfo {
-                id: page_id,
-                typ: PageType::Data,
-                overflow: page.overflow as u64,
-                capacity: 4096 * (page.overflow + 1) as u64,
-                used: 0,
-                parent_page_id,
-            },
-        );
-
-        if page.flags.as_u16() == 0x02 {
-            // leaf page
-            self.read_leaf_element(&data, page.count, page_id, parent_page_id);
-        } else if page.flags.as_u16() == 0x01 {
-            // branch page
-            self.read_branch_element(&data, page.count, page_id, parent_page_id);
-        }
-    }
-
-    pub fn print_db(&mut self) {
-        self.initialize();
-        let meta = self.get_meta();
-
-        self.pages.insert(
-            bolt::Pgid(0),
-            PageInfo {
-                id: 0,
-                typ: PageType::Meta,
-                overflow: 0,
-                capacity: 4096,
-                used: 80,
-                parent_page_id: None,
-            },
-        );
-        self.pages.insert(
-            bolt::Pgid(1),
-            PageInfo {
-                id: 1,
-                typ: PageType::Meta,
-                overflow: 0,
-                capacity: 4096,
-                used: 80,
-                parent_page_id: None,
-            },
-        );
-
-        println!("Active root page: {:?}", meta);
-        let data = self.read_page(meta.freelist_pgid.into());
-        let freelist_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        if !freelist_page
-            .flags
-            .contains(bolt::PageFlag::FreelistPageFlag)
-        {
-            panic!("Invalid freelist page type")
-        }
-        if freelist_page.count == 0xFFFF {
-            panic!("Too large page count")
-        }
-        self.pages.insert(
-            bolt::Pgid(meta.freelist_pgid.into()),
-            PageInfo {
-                id: meta.freelist_pgid.into(),
-                typ: PageType::Freelist,
-                overflow: freelist_page.overflow as u64,
-                capacity: 4096,
-                used: 16 + (freelist_page.count as u64 * 8),
-                parent_page_id: None,
-            },
-        );
-
-        let freelist = self.read_freelist(&data, freelist_page.count);
-        // See
-        // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
-        // 2. https://doc.rust-lang.org/reference/expressions/loop-expr.html#iterator-loops
-        for &i in &freelist {
-            self.pages.insert(
-                bolt::Pgid(i),
-                PageInfo {
-                    id: i,
-                    typ: PageType::Free,
-                    overflow: 0,
-                    capacity: 4096,
-                    used: 0,
-                    parent_page_id: None,
-                },
-            );
-        }
-        println!("Freelist: {:?}", freelist);
-
-        let data = self.read_page(meta.root_pgid.into());
-        let root_page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        if root_page.flags.as_u16() != 0x02 && root_page.flags.as_u16() != 0x01 {
-            panic!("Invalid root page's type")
-        }
-
-        self.print_page(root_page.id.into(), None);
-
-        for (&key, &value) in &self.pages {
-            println!(" {:?} {:?}", key, value);
-        }
-
-        let mut table = Table::new();
-        table.add_row(row!["PageSize", "value"]);
-        table.add_row(row![10]);
-        table.printstd();
-
-        let stdout = io::stdout();
-        let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                let size = f.size();
-                let block = Block::default().title("Ancla").borders(Borders::ALL);
-                f.render_widget(block, size);
-            })
-            .unwrap();
     }
 
     pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
@@ -493,29 +311,144 @@ impl DB {
         }
     }
 
-    pub fn iter_pages(&mut self) -> impl Iterator<Item = PageInfo> {
-        self.initialize();
-        let meta = self.get_meta();
+    pub fn iter_pages(db: Rc<RefCell<DB>>) -> impl Iterator<Item = PageInfo> {
+        db.borrow_mut().initialize();
+        let meta = db.borrow_mut().get_meta();
 
-        let pages = vec![
-            PageInfo {
-                id: 0,
-                typ: PageType::Meta,
+        PageIterator {
+            db: db.clone(),
+            stack: vec![
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: 0,
+                    typ: PageType::Meta,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: 1,
+                    typ: PageType::Meta,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: meta.freelist_pgid.into(),
+                    typ: PageType::Freelist,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: meta.root_pgid.into(),
+                    typ: PageType::DataBranch,
+                },
+            ],
+        }
+    }
+}
+
+struct PageIterator {
+    db: Rc<RefCell<DB>>,
+    stack: Vec<PageIterItem>,
+}
+
+struct PageIterItem {
+    parent_page_id: Option<u64>,
+    page_id: u64,
+    typ: PageType,
+}
+
+impl Iterator for PageIterator {
+    type Item = PageInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.stack.is_empty() {
+            return None;
+        }
+
+        let item = self.stack.remove(0);
+        if item.typ == PageType::Free {
+            return Some(PageInfo {
+                id: item.page_id,
+                typ: PageType::Free,
                 overflow: 0,
+                capacity: 4096,
+                used: 0,
+                parent_page_id: None,
+            });
+        }
+
+        let data = self.db.borrow_mut().read_page(item.page_id);
+        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+        if page.flags.contains(bolt::PageFlag::MetaPageFlag) {
+            Some(PageInfo {
+                id: item.page_id,
+                typ: PageType::Meta,
+                overflow: page.overflow as u64,
                 capacity: 4096,
                 used: 80,
                 parent_page_id: None,
-            },
-            PageInfo {
-                id: 1,
-                typ: PageType::Meta,
-                overflow: 0,
+            })
+        } else if page.flags.contains(bolt::PageFlag::FreelistPageFlag) {
+            let freelist = self.db.borrow_mut().read_freelist(&data, page.count);
+            for &i in &freelist {
+                // See
+                // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
+                // 2. https://doc.rust-lang.org/reference/expressions/loop-expr.html#iterator-loops
+                self.stack.push(PageIterItem {
+                    parent_page_id: None,
+                    page_id: i,
+                    typ: PageType::Free,
+                });
+            }
+
+            return Some(PageInfo {
+                id: item.page_id,
+                typ: PageType::Freelist,
+                overflow: page.overflow as u64,
                 capacity: 4096,
-                used: 80,
+                used: 16 + (page.count as u64 * 8),
                 parent_page_id: None,
-            },
-        ];
-        pages.into_iter()
+            });
+        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+            let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
+            for branch_item in branch_elements {
+                self.stack.push(PageIterItem {
+                    parent_page_id: Some(item.page_id),
+                    page_id: branch_item.pgid,
+                    typ: PageType::DataBranch,
+                });
+            }
+
+            return Some(PageInfo {
+                id: item.page_id,
+                typ: PageType::DataBranch,
+                overflow: page.overflow as u64,
+                capacity: 4096,
+                used: 16 + (page.count as u64 * 12),
+                parent_page_id: item.parent_page_id,
+            });
+        } else {
+            let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
+            for leaf_item in leaf_elements {
+                if let LeafElement::Bucket {
+                    name: _,
+                    pgid: pg_id,
+                } = leaf_item
+                {
+                    self.stack.push(PageIterItem {
+                        parent_page_id: Some(item.page_id),
+                        page_id: pg_id,
+                        typ: PageType::DataLeaf,
+                    });
+                }
+            }
+
+            return Some(PageInfo {
+                id: item.page_id,
+                typ: PageType::DataLeaf,
+                overflow: page.overflow as u64,
+                capacity: 4096,
+                used: 16 + (page.count as u64 * 12),
+                parent_page_id: item.parent_page_id,
+            });
+        }
     }
 }
 

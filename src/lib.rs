@@ -6,4 +6,4 @@ mod db;
 mod errors;
 mod utils;
 
-pub use db::{AnclaOptions, Bucket, DB};
+pub use db::{AnclaOptions, Bucket, PageInfo, DB};

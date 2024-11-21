@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             cli.db,
         )
         .build();
-    let mut db = ancla::DB::build(options);
+    let db = ancla::DB::build(options);
 
     match cli.command {
         SubCommand::Buckets(_) => {
@@ -125,7 +125,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_buckets(&buckets, 0);
         }
         SubCommand::Pages {} => {
-            db.borrow_mut().print_db();
+            let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
+            pages.sort();
+            pages.iter().for_each(|p| {
+                println!("{:?}", p);
+            });
         }
     }
 
