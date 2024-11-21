@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::rc::Rc;
 use std::result::Result;
 
 #[derive(Parser, Debug)]
@@ -48,31 +50,31 @@ struct Bucket {
     child_buckets: Vec<Bucket>,
 }
 
-fn iter_buckets_inner(db: &mut ancla::DB, bucket: &ancla::Bucket) -> Vec<Bucket> {
+fn iter_buckets_inner(bucket: &ancla::Bucket) -> Vec<Bucket> {
     let mut buckets: Vec<Bucket> = Vec::new();
 
-    let child_buckets: Vec<ancla::Bucket> = bucket.iter_buckets(db).collect();
+    let child_buckets: Vec<ancla::Bucket> = bucket.iter_buckets().collect();
     for child_bucket in child_buckets {
         buckets.push(Bucket {
             name: bucket.name.clone(),
             page_id: bucket.page_id,
             is_inline: bucket.is_inline,
-            child_buckets: iter_buckets_inner(db, &child_bucket),
+            child_buckets: iter_buckets_inner(&child_bucket),
         })
     }
 
     buckets
 }
 
-fn iter_buckets(db: &mut ancla::DB) -> Vec<Bucket> {
-    let buckets: Vec<ancla::Bucket> = db.iter_buckets().collect();
+fn iter_buckets(db: Rc<RefCell<ancla::DB>>) -> Vec<Bucket> {
+    let buckets: Vec<ancla::Bucket> = ancla::DB::iter_buckets(db).collect();
     buckets
         .iter()
         .map(|bucket| Bucket {
             name: bucket.name.clone(),
             page_id: bucket.page_id,
             is_inline: bucket.is_inline,
-            child_buckets: iter_buckets_inner(db, bucket),
+            child_buckets: iter_buckets_inner(bucket),
         })
         .collect()
 }
@@ -119,11 +121,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         SubCommand::Buckets(_) => {
-            let buckets = iter_buckets(&mut db);
+            let buckets = iter_buckets(db);
             print_buckets(&buckets, 0);
         }
         SubCommand::Pages {} => {
-            db.print_db();
+            db.borrow_mut().print_db();
         }
     }
 

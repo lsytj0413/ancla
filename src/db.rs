@@ -3,7 +3,9 @@ use bitflags::iter::Iter;
 use bitflags::Flags;
 use fnv_rs::{Fnv64, FnvHasher};
 use prettytable::Table;
+use std::cell::RefCell;
 use std::ops::{Deref, IndexMut};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::{
     collections::BTreeMap,
@@ -47,26 +49,27 @@ pub struct ItemInfo {
     pub value: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Bucket {
     pub parent_bucket: Vec<u8>,
     pub page_id: u64,
     pub is_inline: bool,
     pub name: Vec<u8>,
+    db: Rc<RefCell<DB>>,
 }
 
 impl Bucket {
-    pub fn iter_buckets<'a>(&self, db: &'a mut DB) -> impl Iterator<Item = Bucket> + 'a {
+    pub fn iter_buckets(&self) -> impl Iterator<Item = Bucket> {
         if self.is_inline {
             return BucketIterator {
-                db,
+                db: self.db.clone(),
                 parent_bucket: Some(self.clone()),
                 stack: Vec::new(),
             };
         }
 
         BucketIterator {
-            db,
+            db: self.db.clone(),
             parent_bucket: Some(self.clone()),
             stack: vec![IterItem {
                 page_id: From::from(self.page_id),
@@ -341,16 +344,16 @@ impl DB {
         }
     }
 
-    pub fn build(ancla_options: AnclaOptions) -> DB {
+    pub fn build(ancla_options: AnclaOptions) -> Rc<RefCell<DB>> {
         let file = File::open(ancla_options.db_path.clone()).unwrap();
-        DB {
+        Rc::new(RefCell::new(DB {
             options: ancla_options,
             file,
             pages: BTreeMap::new(),
             page_datas: BTreeMap::new(),
             meta0: None,
             meta1: None,
-        }
+        }))
     }
 
     pub fn print_page(&mut self, page_id: u64, parent_page_id: Option<u64>) {
@@ -476,12 +479,12 @@ impl DB {
             .unwrap();
     }
 
-    pub fn iter_buckets(&mut self) -> impl Iterator<Item = Bucket> + '_ {
-        self.initialize();
-        let meta = self.get_meta();
+    pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
+        db.borrow_mut().initialize();
+        let meta = db.borrow_mut().get_meta();
 
         BucketIterator {
-            db: self,
+            db: db.clone(),
             parent_bucket: None,
             stack: vec![IterItem {
                 page_id: meta.root_pgid,
@@ -516,8 +519,8 @@ impl DB {
     }
 }
 
-struct BucketIterator<'a> {
-    db: &'a mut DB,
+struct BucketIterator {
+    db: Rc<RefCell<DB>>,
     parent_bucket: Option<Bucket>,
     stack: Vec<IterItem>,
 }
@@ -527,7 +530,7 @@ struct IterItem {
     index: usize,
 }
 
-impl<'a> Iterator for BucketIterator<'a> {
+impl Iterator for BucketIterator {
     type Item = Bucket;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -537,10 +540,10 @@ impl<'a> Iterator for BucketIterator<'a> {
             }
 
             let item = self.stack.index_mut(self.stack.len() - 1);
-            let data = self.db.read_page(item.page_id.into());
+            let data = self.db.borrow_mut().read_page(item.page_id.into());
             let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
             if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-                let leaf_elements = self.db.read_page_leaf_elements(&data);
+                let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
                 if item.index < leaf_elements.len() {
                     let elem = leaf_elements[item.index].clone();
                     item.index += 1;
@@ -554,6 +557,7 @@ impl<'a> Iterator for BucketIterator<'a> {
                                 is_inline: false,
                                 page_id: pgid,
                                 name,
+                                db: self.db.clone(),
                             });
                         }
                         LeafElement::InlineBucket { name, items: _ } => {
@@ -565,6 +569,7 @@ impl<'a> Iterator for BucketIterator<'a> {
                                 is_inline: true,
                                 page_id: 0,
                                 name,
+                                db: self.db.clone(),
                             });
                         }
                         LeafElement::KeyValue(_) => {}
@@ -574,7 +579,7 @@ impl<'a> Iterator for BucketIterator<'a> {
 
                 self.stack.pop();
             } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-                let branch_elements = self.db.read_page_branch_elements(&data);
+                let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
                 if item.index < branch_elements.len() {
                     let elem = branch_elements[item.index].clone();
                     item.index += 1;
