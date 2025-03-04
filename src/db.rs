@@ -1,31 +1,21 @@
 use crate::bolt::{self, PAGE_HEADER_SIZE};
-use bitflags::iter::Iter;
-use bitflags::Flags;
 use fnv_rs::{Fnv64, FnvHasher};
-use prettytable::Table;
 use std::cell::RefCell;
-use std::ops::{Deref, IndexMut};
+use std::ops::IndexMut;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, Read, Seek},
-    ops::Index,
 };
 
-use tui::{
-    backend::CrosstermBackend,
-    widgets::{Block, Borders},
-    Terminal,
-};
 use typed_builder::TypedBuilder;
 
 pub struct DB {
     pub(crate) options: AnclaOptions,
     file: File,
 
-    pages: BTreeMap<bolt::Pgid, PageInfo>,
     page_datas: BTreeMap<bolt::Pgid, Arc<Vec<u8>>>,
     meta0: Option<bolt::Meta>,
     meta1: Option<bolt::Meta>,
@@ -109,6 +99,26 @@ enum LeafElement {
 struct KeyValue {
     key: Vec<u8>,
     value: Vec<u8>,
+}
+
+#[derive(Clone)]
+enum DbItem {
+    Branch(BranchElement),
+    KeyValue(KeyValue),
+    InlineBucket(),
+    Bucket(Bucket),
+}
+
+struct DbItemIterator {
+    db: Rc<RefCell<DB>>,
+}
+
+impl Iterator for DbItemIterator {
+    type Item = DbItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
 }
 
 impl DB {
@@ -290,11 +300,17 @@ impl DB {
         Rc::new(RefCell::new(DB {
             options: ancla_options,
             file,
-            pages: BTreeMap::new(),
             page_datas: BTreeMap::new(),
             meta0: None,
             meta1: None,
         }))
+    }
+
+    fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
+        db.borrow_mut().initialize();
+        let meta = db.borrow_mut().get_meta();
+
+        DbItemIterator { db: db.clone() }
     }
 
     pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
