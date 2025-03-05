@@ -23,6 +23,7 @@ ratatui = "0.29.0"
 thiserror = "2.0.0"
 tui = "0.19.0"
 typed-builder = "0.20.0"
+comfy-table = { version = "7.1" }
 
 [[bin]]
 name = "anclalet"

@@ -551,8 +551,8 @@ impl Iterator for BucketIterator {
 // dump -- print pages
 // page-item -- print page items
 // get -- print key value
-// info -- print page size
-// keys -- print keys
+// info -- print page size  -> todo
+// keys -- print keys -> todo
 // page -- print pages
 // stats -- ....
 // surgery --

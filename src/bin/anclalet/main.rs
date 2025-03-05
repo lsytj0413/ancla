@@ -1,4 +1,7 @@
 use clap::{Args, Parser, Subcommand};
+use comfy_table::presets::NOTHING;
+use comfy_table::Table;
+use prettytable::format;
 use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
@@ -78,17 +81,39 @@ fn iter_buckets(db: Rc<RefCell<ancla::DB>>) -> Vec<Bucket> {
         .collect()
 }
 
-fn print_buckets(buckets: &Vec<Bucket>, level: usize) {
-    for bucket in buckets {
-        println!(
-            "{}{}, {}, {}",
-            '-'.to_string().repeat(level),
-            String::from_utf8(bucket.name.clone()).unwrap(),
-            bucket.is_inline,
-            bucket.page_id
-        );
-        print_buckets(&bucket.child_buckets, level + 2);
+fn print_buckets_inner(buckets: &[Bucket], table: &mut comfy_table::Table, level: usize) {
+    for (i, bucket) in buckets.iter().enumerate() {
+        let chr = if i == buckets.len() - 1 { '└' } else { '├' };
+
+        table.add_row(vec![
+            format!(
+                "{chr:>level$}{}",
+                String::from_utf8(bucket.name.clone()).unwrap()
+            ),
+            bucket.page_id.to_string(),
+            bucket.is_inline.to_string(),
+        ]);
+        print_buckets_inner(&bucket.child_buckets, table, level + 1);
     }
+}
+
+fn print_buckets(buckets: &Vec<Bucket>) {
+    let mut buckets_table = Table::new();
+    buckets_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+    buckets_table.load_preset(NOTHING);
+    buckets_table.enforce_styling();
+    buckets_table.set_header(vec!["BUCKET-NAME", "PAGE-ID", "IS-INLINE"]);
+
+    for bucket in buckets {
+        buckets_table.add_row(vec![
+            String::from_utf8(bucket.name.clone()).unwrap(),
+            bucket.page_id.to_string(),
+            bucket.is_inline.to_string(),
+        ]);
+
+        print_buckets_inner(&bucket.child_buckets, &mut buckets_table, 1);
+    }
+    println!("{buckets_table}");
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -121,14 +146,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         SubCommand::Buckets(_) => {
             let buckets = iter_buckets(db);
-            print_buckets(&buckets, 0);
+            print_buckets(&buckets);
         }
         SubCommand::Pages {} => {
             let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
             pages.sort();
+            let mut pages_table = Table::new();
+            pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+            pages_table.load_preset(comfy_table::presets::NOTHING);
+            pages_table.enforce_styling();
+            pages_table.set_header(vec![
+                "PAGE-ID",
+                "TYPE",
+                "OVERFLOW",
+                "CAPACITY",
+                "USED",
+                "PARENT-PAGE-ID",
+            ]);
+
             pages.iter().for_each(|p| {
-                println!("{:?}", p);
+                pages_table.add_row(vec![
+                    comfy_table::Cell::new(p.id),
+                    comfy_table::Cell::new(format!("{:?}", p.typ)),
+                    comfy_table::Cell::new(p.overflow),
+                    comfy_table::Cell::new(p.capacity),
+                    comfy_table::Cell::new(p.used),
+                    comfy_table::Cell::new(format!("{:?}", p.parent_page_id)),
+                ]);
             });
+            println!("{pages_table}");
         }
     }
 
