@@ -13,7 +13,6 @@ use std::{
 use typed_builder::TypedBuilder;
 
 pub struct DB {
-    pub(crate) options: AnclaOptions,
     file: File,
 
     page_datas: BTreeMap<bolt::Pgid, Arc<Vec<u8>>>,
@@ -84,31 +83,46 @@ pub enum PageType {
 
 #[derive(Debug, Clone)]
 struct BranchElement {
+    #[allow(dead_code)]
     key: Vec<u8>,
     pgid: u64,
 }
 
 #[derive(Debug, Clone)]
 enum LeafElement {
-    Bucket { name: Vec<u8>, pgid: u64 },
-    InlineBucket { name: Vec<u8>, items: Vec<KeyValue> },
+    Bucket {
+        name: Vec<u8>,
+        pgid: u64,
+    },
+    #[allow(dead_code)]
+    InlineBucket {
+        name: Vec<u8>,
+        items: Vec<KeyValue>,
+    },
     KeyValue(KeyValue),
 }
 
 #[derive(Debug, Clone)]
 struct KeyValue {
+    #[allow(dead_code)]
     key: Vec<u8>,
+    #[allow(dead_code)]
     value: Vec<u8>,
 }
 
 #[derive(Clone)]
 enum DbItem {
+    #[allow(dead_code)]
     Branch(BranchElement),
+    #[allow(dead_code)]
     KeyValue(KeyValue),
+    #[allow(dead_code)]
     InlineBucket(),
+    #[allow(dead_code)]
     Bucket(Bucket),
 }
 
+#[allow(dead_code)]
 struct DbItemIterator {
     db: Rc<RefCell<DB>>,
 }
@@ -298,7 +312,6 @@ impl DB {
     pub fn build(ancla_options: AnclaOptions) -> Rc<RefCell<DB>> {
         let file = File::open(ancla_options.db_path.clone()).unwrap();
         Rc::new(RefCell::new(DB {
-            options: ancla_options,
             file,
             page_datas: BTreeMap::new(),
             meta0: None,
@@ -306,8 +319,10 @@ impl DB {
         }))
     }
 
+    #[allow(dead_code)]
     fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
         db.borrow_mut().initialize();
+        #[allow(unused_variables)]
         let meta = db.borrow_mut().get_meta();
 
         DbItemIterator { db: db.clone() }

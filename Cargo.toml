@@ -34,6 +34,6 @@ bench = true
 doc = true
 proc-macro = false
 harness = true
-# edition = "2024"
+edition = "2024"
 # crate-type = ["bin"]
 required-features = []

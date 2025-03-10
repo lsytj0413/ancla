@@ -1,7 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use comfy_table::presets::NOTHING;
 use comfy_table::Table;
-use prettytable::format;
 use std::cell::RefCell;
 use std::error::Error;
 use std::rc::Rc;
