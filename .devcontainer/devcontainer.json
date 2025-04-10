@@ -1,0 +1,85 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/go
+{
+    "name": "Rust Development Environment",
+    // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+    // "image": "mcr.microsoft.com/devcontainers/go:1.22-bullseye",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    // Features to add to the dev container. More info: https://containers.dev/features.
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": "true",
+            "username": "vscode",
+            "userUid": "1000",
+            "userGid": "1000",
+            "upgradePackages": "true"
+        },
+        "ghcr.io/devcontainers/features/git:1": {
+            "version": "latest",
+            "ppa": "false"
+        },
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+        "ghcr.io/devcontainers-extra/features/protoc:1": {
+            "version": "30.2"
+        },
+        "ghcr.io/devcontainers-community/features/llvm": {}
+    },
+    "containerEnv": {
+        "TZ": "Asia/Shanghai"
+    },
+    "runArgs": [
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
+    ],
+    "mounts": [
+        {
+            "source": "/var/run/docker.sock",
+            "target": "/var/run/docker.sock",
+            "type": "bind"
+        }
+    ],
+    "postCreateCommand": "",
+    "customizations": {
+        // Configure properties specific to VS Code.
+        "vscode": {
+            "settings": {
+                "rust-analyzer.cargo.sysroot": "discover"
+            },
+            "extensions": [
+                "ms-vscode.makefile-tools",
+                "ms-vscode.cpptools-themes",
+                "vscode-icons-team.vscode-icons",
+                "tamasfe.even-better-toml",
+                "github.vscode-github-actions",
+                "eamodio.gitlens",
+                "rust-lang.rust-analyzer",
+                "visualstudioexptteam.vscodeintellicode",
+                "zxh404.vscode-proto3",
+                "mfuentesg.vscode-protolint",
+                "davidanson.vscode-markdownlint",
+                "mohsen1.prettify-json",
+                "ms-azuretools.vscode-docker",
+                "github.copilot",
+                "redhat.vscode-yaml",
+                "xaver.clang-format"
+            ]
+        }
+    },
+    // Use 'forwardPorts' to make a list of ports inside the container available locally.
+    // "forwardPorts": [9000],
+    // Use 'portsAttributes' to set default properties for specific forwarded ports. 
+    // More info: https://containers.dev/implementors/json_reference/#port-attributes
+    // "portsAttributes": {
+    //     "9000": {
+    //         "label": "Hello Remote World",
+    //         "onAutoForward": "notify"
+    //     }
+    // }
+    // Use 'postCreateCommand' to run commands after the container is created.
+    // "postCreateCommand": "go version",
+    // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+    "remoteUser": "vscode"
+}
