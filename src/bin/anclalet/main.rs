@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::result::Result;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, subcommand_precedence_over_arg = true)]
 struct Command {
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
@@ -21,6 +21,7 @@ struct Command {
     #[clap(subcommand)]
     command: SubCommand,
 
+    #[arg(global = true, required = false)]
     db: String,
 }
 
@@ -34,6 +35,7 @@ enum Endian {
 enum SubCommand {
     Buckets(BucketsArgs),
     Pages {},
+    Info {},
 }
 
 #[derive(Debug, Args)]
@@ -174,6 +176,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ]);
             });
             println!("{pages_table}");
+        }
+        SubCommand::Info {} => {
+            let info = ancla::DB::info(db);
+            println!("Page Size: {:?}", info.page_size);
         }
     }
 

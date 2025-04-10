@@ -372,6 +372,19 @@ impl DB {
             ],
         }
     }
+
+    pub fn info(db: Rc<RefCell<DB>>) -> Info {
+        db.borrow_mut().initialize();
+        let meta = db.borrow_mut().get_meta();
+
+        Info {
+            page_size: meta.page_size,
+        }
+    }
+}
+
+pub struct Info {
+    pub page_size: u32,
 }
 
 struct PageIterator {
