@@ -17,7 +17,7 @@
             "upgradePackages": "true"
         },
         "ghcr.io/devcontainers/features/git:1": {
-            "version": "latest",
+            "version": "v2.49.0",
             "ppa": "false"
         },
         "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
