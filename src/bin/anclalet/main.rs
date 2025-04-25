@@ -36,6 +36,12 @@ enum SubCommand {
     Buckets(BucketsArgs),
     Pages {},
     Info {},
+    KV {
+        #[arg(long)]
+        buckets: Vec<String>,
+        #[arg(long)]
+        key: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -180,6 +186,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         SubCommand::Info {} => {
             let info = ancla::DB::info(db);
             println!("Page Size: {:?}", info.page_size);
+        }
+        // kv --key bucket0_key0 --buckets bucket0
+        // 可以通过增加 --buckets 指定多个 bucket
+        SubCommand::KV { buckets, key } => {
+            let kv = ancla::DB::get_key_value(db, &buckets, &key);
+            if let Some(kv) = kv {
+                println!("Key: {:?}", String::from_utf8(kv.key));
+                println!("Value: {:?}", String::from_utf8(kv.value));
+            } else {
+                println!("Key not found");
+            }
         }
     }
 

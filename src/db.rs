@@ -1,4 +1,4 @@
-use crate::bolt::{self, PAGE_HEADER_SIZE};
+use crate::bolt::{self, Pgid, PAGE_HEADER_SIZE};
 use fnv_rs::{Fnv64, FnvHasher};
 use std::cell::RefCell;
 use std::ops::IndexMut;
@@ -103,11 +103,11 @@ enum LeafElement {
 }
 
 #[derive(Debug, Clone)]
-struct KeyValue {
+pub struct KeyValue {
     #[allow(dead_code)]
-    key: Vec<u8>,
+    pub key: Vec<u8>,
     #[allow(dead_code)]
-    value: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -379,6 +379,71 @@ impl DB {
 
         Info {
             page_size: meta.page_size,
+        }
+    }
+
+    pub fn get_key_value(
+        db: Rc<RefCell<DB>>,
+        buckets: &[String],
+        key: &String,
+    ) -> Option<KeyValue> {
+        db.borrow_mut().initialize();
+        let meta = db.borrow_mut().get_meta();
+        db.borrow_mut()
+            .get_key_value_inner(buckets, key, meta.root_pgid.into())
+    }
+
+    fn get_key_value_inner(
+        &mut self,
+        buckets: &[String],
+        key: &String,
+        pgid: u64,
+    ) -> Option<KeyValue> {
+        let data = self.read_page(pgid);
+        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+        if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+            let leaf_elements = self.read_page_leaf_elements(&data);
+            println!("leaf_elements: {:?}", leaf_elements);
+            for leaf_item in leaf_elements {
+                match leaf_item {
+                    LeafElement::KeyValue(kv) => {
+                        if kv.key == key.as_bytes() && buckets.len() == 0 {
+                            return Some(kv);
+                        }
+                    }
+                    LeafElement::Bucket { name, pgid } => {
+                        if buckets.len() == 0 {
+                            continue;
+                        }
+
+                        if name == buckets[0].as_bytes() {
+                            return self.get_key_value_inner(&buckets[1..].to_vec(), key, pgid);
+                        }
+                    }
+                    LeafElement::InlineBucket { name, items } => {
+                        if buckets.len() != 1 {
+                            return None;
+                        }
+
+                        if name == buckets[0].as_bytes() {
+                            for item in items {
+                                if item.key == key.as_bytes() {
+                                    return Some(item);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+            let branch_elements = self.read_page_branch_elements(&data);
+            let r =
+                branch_elements.binary_search_by_key(&key.as_bytes(), |elem| elem.key.as_slice());
+            let index = r.unwrap_or_else(|idx| if idx > 0 { idx - 1 } else { 0 });
+            return self.get_key_value_inner(buckets, key, branch_elements[index].pgid);
+        } else {
+            return None;
         }
     }
 }
