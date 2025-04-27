@@ -92,6 +92,8 @@ fn print_buckets_inner(buckets: &[Bucket], table: &mut comfy_table::Table, level
     for (i, bucket) in buckets.iter().enumerate() {
         let chr = if i == buckets.len() - 1 { '└' } else { '├' };
 
+        let bucket_name = String::from_utf8(bucket.name.clone()).unwrap();
+        assert!(bucket.name.len() > 2, "{}", bucket_name);
         table.add_row(vec![
             format!(
                 "{chr:>level$}{}",

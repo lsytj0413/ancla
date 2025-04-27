@@ -23,7 +23,7 @@ pub(crate) struct Page {
     pub(crate) overflow: u32,
 }
 
-pub(crate) const PAGE_HEADER_SIZE: usize = 16;
+pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<Page>();
 
 impl TryFrom<&[u8]> for Page {
     type Error = errors::DatabaseError;
@@ -236,3 +236,188 @@ pub(crate) const MAGIC_NUMBER: u32 = 0xED0CDAED;
 
 // The data file format version.
 pub(crate) const DATAFILE_VERSION: u32 = 2;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_page_try_from() {
+        let data: [u8; 16] = [
+            1, 0, 0, 0, 0, 0, 0, 0, // id
+            1, 0, // flags
+            0, 0, // count
+            1, 0, 0, 0, // overflow
+        ];
+        let page = Page::try_from(&data as &[u8]).unwrap();
+        assert_eq!(page.id.0, 1);
+        assert_eq!(page.flags.as_u16(), 1);
+        assert_eq!(page.count, 0);
+        assert_eq!(page.overflow, 1);
+    }
+
+    #[test]
+    fn test_page_try_from_too_small() {
+        let data: [u8; 15] = [
+            1, 0, 0, 0, 0, 0, 0, 0, // id
+            1, 0, // flags
+            0, 0, // count
+            1, 0, 0, // overflow
+        ];
+        let result = Page::try_from(&data as &[u8]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            errors::DatabaseError::TooSmallData {
+                expect: 16,
+                got: 15
+            }
+        );
+    }
+
+    #[test]
+    fn test_meta_try_from() {
+        let data: [u8; 80] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // PageHeader
+            0xED, 0xDA, 0x0C, 0xED, // magic
+            2, 0, 0, 0, // version
+            1, 0, 0, 0, // page_size
+            0, 0, 0, 0, // _flag
+            1, 0, 0, 0, 0, 0, 0, 0, // root_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // root_sequence
+            1, 0, 0, 0, 0, 0, 0, 0, // freelist_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // max_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // txid
+            b'a', 0, 0, 0, 0, 0, 0, 0, // checksum
+        ];
+        let meta = Meta::try_from(&data as &[u8]).unwrap();
+        assert_eq!(meta.magic, MAGIC_NUMBER);
+        assert_eq!(meta.version, DATAFILE_VERSION);
+        assert_eq!(meta.page_size, 1);
+        assert_eq!(meta.root_pgid, Pgid(1));
+        assert_eq!(meta.root_sequence, 1);
+        assert_eq!(meta.freelist_pgid, Pgid(1));
+        assert_eq!(meta.max_pgid, Pgid(1));
+        assert_eq!(meta.txid, 1);
+        assert_eq!(meta.checksum, 97);
+    }
+
+    #[test]
+    fn test_meta_try_from_too_small() {
+        let data: [u8; 79] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // PageHeader
+            0xED, 0xDA, 0x0C, 0xED, // magic
+            2, 0, 0, 0, // version
+            1, 0, 0, 0, // page_size
+            0, 0, 0, 0, // _flag
+            1, 0, 0, 0, 0, 0, 0, 0, // root_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // root_sequence
+            1, 0, 0, 0, 0, 0, 0, 0, // freelist_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // max_pgid
+            1, 0, 0, 0, 0, 0, 0, 0, // txid
+            b'a', 0, 0, 0, 0, 0, 0, // checksum
+        ];
+        let result = Meta::try_from(&data as &[u8]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            errors::DatabaseError::TooSmallData {
+                expect: 80,
+                got: 79
+            }
+        );
+    }
+
+    #[test]
+    fn test_branch_page_element_try_from() {
+        let data: [u8; 16] = [
+            1, 0, 0, 0, // pos
+            2, 0, 0, 0, // ksize
+            1, 0, 0, 0, 0, 0, 0, 0, // pgid
+        ];
+        let element = BranchPageElement::try_from(&data as &[u8]).unwrap();
+        assert_eq!(element.pos, 1);
+        assert_eq!(element.ksize, 2);
+        assert_eq!(element.pgid.0, 1);
+    }
+
+    #[test]
+    fn test_branch_page_element_try_from_too_small() {
+        let data: [u8; 15] = [
+            1, 0, 0, 0, // pos
+            2, 0, 0, 0, // ksize
+            1, 0, 0, 0, 0, 0, 0, // pgid
+        ];
+        let result = BranchPageElement::try_from(&data as &[u8]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            errors::DatabaseError::TooSmallData {
+                expect: 16,
+                got: 15
+            }
+        );
+    }
+
+    #[test]
+    fn test_leaf_page_element_try_from() {
+        let data: [u8; 16] = [
+            1, 0, 0, 0, // flags
+            2, 0, 0, 0, // pos
+            3, 0, 0, 0, // ksize
+            4, 0, 0, 0, // vsize
+        ];
+        let element = LeafPageElement::try_from(&data as &[u8]).unwrap();
+        assert_eq!(element.flags, 1);
+        assert_eq!(element.pos, 2);
+        assert_eq!(element.ksize, 3);
+        assert_eq!(element.vsize, 4);
+    }
+
+    #[test]
+    fn test_leaf_page_element_try_from_too_small() {
+        let data: [u8; 15] = [
+            1, 0, 0, 0, // flags
+            2, 0, 0, 0, // pos
+            3, 0, 0, 0, // ksize
+            4, 0, 0, // vsize
+        ];
+        let result = LeafPageElement::try_from(&data as &[u8]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            errors::DatabaseError::TooSmallData {
+                expect: 16,
+                got: 15
+            }
+        );
+    }
+
+    #[test]
+    fn test_bucket_try_from() {
+        let data: [u8; 16] = [
+            1, 0, 0, 0, 0, 0, 0, 0, // root
+            2, 0, 0, 0, 0, 0, 0, 0, // sequence
+        ];
+        let bucket = Bucket::try_from(&data as &[u8]).unwrap();
+        assert_eq!(bucket.root.0, 1);
+        assert_eq!(bucket.sequence, 2);
+    }
+
+    #[test]
+    fn test_bucket_try_from_too_small() {
+        let data: [u8; 15] = [
+            1, 0, 0, 0, 0, 0, 0, 0, // root
+            2, 0, 0, 0, 0, 0, 0, // sequence
+        ];
+        let result = Bucket::try_from(&data as &[u8]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            errors::DatabaseError::TooSmallData {
+                expect: 16,
+                got: 15
+            }
+        );
+    }
+}
