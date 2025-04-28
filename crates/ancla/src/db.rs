@@ -1,4 +1,4 @@
-use crate::bolt::{self, Pgid, PAGE_HEADER_SIZE};
+use crate::bolt::{self, PAGE_HEADER_SIZE};
 use fnv_rs::{Fnv64, FnvHasher};
 use std::cell::RefCell;
 use std::ops::IndexMut;

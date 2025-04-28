@@ -33,3 +33,7 @@ tokio = { version = "1.44.1", default-features = false, features = [
     "parking_lot",
 ] }
 ancla = { path = "../crates/ancla" }
+
+[[bin]]
+name = "boltcli"
+path = "src/main.rs"
