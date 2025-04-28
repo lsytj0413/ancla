@@ -1,28 +1,168 @@
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use clap_verbosity_flag::{LogLevel, VerbosityFilter};
+use cling::prelude::*;
 use comfy_table::presets::NOTHING;
 use comfy_table::Table;
 use std::cell::RefCell;
-use std::error::Error;
 use std::rc::Rc;
-use std::result::Result;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None, subcommand_precedence_over_arg = true)]
-struct Command {
-    #[arg(short, long, default_value_t = false)]
-    verbose: bool,
-
-    #[arg(short, long)]
-    page_size: Option<u32>,
-
-    #[arg(short, long)]
-    endian: Option<Endian>,
+#[derive(Run, Parser, Clone)]
+#[cling(run = "init")]
+pub struct App {
+    #[clap(flatten)]
+    pub common_opts: CommonOpts,
 
     #[clap(subcommand)]
-    command: SubCommand,
+    pub cmd: Commands,
+}
 
-    #[arg(global = true, required = false)]
-    db: String,
+#[derive(Run, Subcommand, Clone)]
+pub enum Commands {
+    /// List all buckets
+    Buckets(BucketsCommand),
+    /// List all pages
+    Pages(PageCommand),
+    /// Show info about the database
+    Info(InfoCommand),
+    /// Get key value
+    KV(KVCommand),
+}
+
+#[derive(Run, Parser, Collect, Clone)]
+#[cling(run = "run_buckets")]
+pub struct BucketsCommand {}
+
+pub fn run_buckets(
+    _state: State<Env>,
+    _args: &BucketsCommand,
+    common_opts: &CommonOpts,
+) -> Result<()> {
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+    let buckets = iter_buckets(db);
+    print_buckets(&buckets);
+
+    Ok(())
+}
+
+#[derive(Run, Parser, Collect, Clone)]
+#[cling(run = "run_pages")]
+pub struct PageCommand {}
+
+pub fn run_pages(_state: State<Env>, _args: &PageCommand, common_opts: &CommonOpts) -> Result<()> {
+    // This function is just a placeholder for the actual implementation
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+
+    let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
+    pages.sort();
+    let mut pages_table = Table::new();
+    pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+    pages_table.load_preset(comfy_table::presets::NOTHING);
+    pages_table.enforce_styling();
+    pages_table.set_header(vec![
+        "PAGE-ID",
+        "TYPE",
+        "OVERFLOW",
+        "CAPACITY",
+        "USED",
+        "PARENT-PAGE-ID",
+    ]);
+
+    pages.iter().for_each(|p| {
+        pages_table.add_row(vec![
+            comfy_table::Cell::new(p.id),
+            comfy_table::Cell::new(format!("{:?}", p.typ)),
+            comfy_table::Cell::new(p.overflow),
+            comfy_table::Cell::new(p.capacity),
+            comfy_table::Cell::new(p.used),
+            comfy_table::Cell::new(format!("{:?}", p.parent_page_id)),
+        ]);
+    });
+    println!("{pages_table}");
+    Ok(())
+}
+
+#[derive(Run, Parser, Collect, Clone, Debug)]
+#[cling(run = "run_kv")]
+pub struct KVCommand {
+    #[clap(long)]
+    pub buckets: Vec<String>,
+    #[clap(long)]
+    pub key: String,
+}
+
+pub fn run_kv(_state: State<Env>, args: &KVCommand, common_opts: &CommonOpts) -> Result<()> {
+    println!("{:?}", args);
+
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+
+    let kv = ancla::DB::get_key_value(db, &args.buckets, &args.key);
+    if let Some(kv) = kv {
+        println!("Key: {:?}", String::from_utf8(kv.key));
+        println!("Value: {:?}", String::from_utf8(kv.value));
+    } else {
+        println!("Key not found");
+    }
+    Ok(())
+}
+
+#[derive(Run, Parser, Collect, Clone)]
+#[cling(run = "run_info")]
+pub struct InfoCommand {}
+
+pub fn run_info(_state: State<Env>, _args: &InfoCommand, common_opts: &CommonOpts) -> Result<()> {
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+    let info = ancla::DB::info(db);
+    println!("Page Size: {:?}", info.page_size);
+    Ok(())
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Quiet;
+impl LogLevel for Quiet {
+    fn default_filter() -> VerbosityFilter {
+        VerbosityFilter::Error
+    }
+
+    fn verbose_long_help() -> Option<&'static str> {
+        None
+    }
+
+    fn quiet_help() -> Option<&'static str> {
+        None
+    }
+
+    fn quiet_long_help() -> Option<&'static str> {
+        None
+    }
+}
+
+#[derive(Args, Collect, Clone, Default)]
+pub struct CommonOpts {
+    #[clap(flatten)]
+    pub(crate) verbose: clap_verbosity_flag::Verbosity<Quiet>,
+
+    #[arg(long)]
+    pub(crate) db: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Env {}
+
+fn init() -> Result<State<Env>> {
+    Ok(State(Env {}))
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -30,22 +170,6 @@ enum Endian {
     Little,
     Big,
 }
-
-#[derive(Debug, Subcommand)]
-enum SubCommand {
-    Buckets(BucketsArgs),
-    Pages {},
-    Info {},
-    KV {
-        #[arg(long)]
-        buckets: Vec<String>,
-        #[arg(long)]
-        key: String,
-    },
-}
-
-#[derive(Debug, Args)]
-struct BucketsArgs {}
 
 const fn is_target_little_endian() -> bool {
     // cfg!(target_endian = "little")
@@ -123,72 +247,7 @@ fn print_buckets(buckets: &Vec<Bucket>) {
     println!("{buckets_table}");
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let mut cli = Command::parse();
-
-    if cli.endian.is_none() {
-        if is_target_little_endian() {
-            cli.endian = Some(Endian::Little);
-        } else {
-            cli.endian = Some(Endian::Big);
-        }
-    }
-
-    println!("{:?}", cli);
-    println!("{:?}", page_size::get());
-
-    let options = ancla::AnclaOptions::builder().db_path(cli.db).build();
-    let db = ancla::DB::build(options);
-
-    match cli.command {
-        SubCommand::Buckets(_) => {
-            let buckets = iter_buckets(db);
-            print_buckets(&buckets);
-        }
-        SubCommand::Pages {} => {
-            let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
-            pages.sort();
-            let mut pages_table = Table::new();
-            pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
-            pages_table.load_preset(comfy_table::presets::NOTHING);
-            pages_table.enforce_styling();
-            pages_table.set_header(vec![
-                "PAGE-ID",
-                "TYPE",
-                "OVERFLOW",
-                "CAPACITY",
-                "USED",
-                "PARENT-PAGE-ID",
-            ]);
-
-            pages.iter().for_each(|p| {
-                pages_table.add_row(vec![
-                    comfy_table::Cell::new(p.id),
-                    comfy_table::Cell::new(format!("{:?}", p.typ)),
-                    comfy_table::Cell::new(p.overflow),
-                    comfy_table::Cell::new(p.capacity),
-                    comfy_table::Cell::new(p.used),
-                    comfy_table::Cell::new(format!("{:?}", p.parent_page_id)),
-                ]);
-            });
-            println!("{pages_table}");
-        }
-        SubCommand::Info {} => {
-            let info = ancla::DB::info(db);
-            println!("Page Size: {:?}", info.page_size);
-        }
-        // kv --key bucket0_key0 --buckets bucket0
-        // 可以通过增加 --buckets 指定多个 bucket
-        SubCommand::KV { buckets, key } => {
-            let kv = ancla::DB::get_key_value(db, &buckets, &key);
-            if let Some(kv) = kv {
-                println!("Key: {:?}", String::from_utf8(kv.key));
-                println!("Value: {:?}", String::from_utf8(kv.value));
-            } else {
-                println!("Key not found");
-            }
-        }
-    }
-
-    Ok(())
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> ClingFinished<App> {
+    Cling::parse_and_run().await
 }

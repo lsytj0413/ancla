@@ -403,7 +403,6 @@ impl DB {
         let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
         if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
             let leaf_elements = self.read_page_leaf_elements(&data);
-            println!("leaf_elements: {:?}", leaf_elements);
             for leaf_item in leaf_elements {
                 match leaf_item {
                     LeafElement::KeyValue(kv) => {
@@ -422,7 +421,7 @@ impl DB {
                     }
                     LeafElement::InlineBucket { name, items } => {
                         if buckets.len() != 1 {
-                            return None;
+                            continue;
                         }
 
                         if name == buckets[0].as_bytes() {
