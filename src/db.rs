@@ -655,3 +655,64 @@ impl Iterator for BucketIterator {
 pub struct AnclaOptions {
     db_path: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn test_iter_buckets() {
+        let db = DB::build(
+            AnclaOptions::builder()
+                .db_path(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("testdata")
+                        .join("data.db")
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                )
+                .build(),
+        );
+        let buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.name.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                b"b0".to_vec(),
+                b"b1".to_vec(),
+                b"b2".to_vec(),
+                b"b3".to_vec(),
+                b"b4".to_vec(),
+            ]
+        );
+
+        let buckets0 = buckets[0].iter_buckets().collect::<Vec<_>>();
+        assert_eq!(
+            buckets0
+                .iter()
+                .map(|bucket| bucket.name.clone())
+                .collect::<Vec<_>>(),
+            Vec::<Vec<_>>::new(),
+        );
+
+        let buckets1 = buckets[1].iter_buckets().collect::<Vec<_>>();
+        assert_eq!(
+            buckets1
+                .iter()
+                .map(|bucket| bucket.name.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                b"bb00".to_vec(),
+                b"bb01".to_vec(),
+                b"bb02".to_vec(),
+                b"bb03".to_vec(),
+                b"bb04".to_vec()
+            ]
+        );
+    }
+}
