@@ -658,9 +658,59 @@ pub struct AnclaOptions {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use serde::Serialize;
+    use std::fs;
     use std::path::Path;
 
-    use super::*;
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(deny_unknown_fields)]
+    struct Bucket {
+        #[serde(rename = "Name")]
+        name: String,
+        #[serde(rename = "Buckets")]
+        #[serde(default)]
+        buckets: Vec<Bucket>,
+        #[serde(rename = "Items")]
+        #[serde(default)]
+        items: Vec<Item>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "PascalCase")]
+    struct Item {
+        key: String,
+        value: String,
+    }
+
+    fn assert_buckets_equal(
+        parent: String,
+        actual_buckets: &[crate::db::Bucket],
+        expect_buckets: &[Bucket],
+    ) {
+        assert_eq!(
+            actual_buckets.len(),
+            expect_buckets.len(),
+            "different child buckets num under: {}",
+            parent
+        );
+
+        for (actual, expect) in actual_buckets.iter().zip(expect_buckets.iter()) {
+            assert_eq!(
+                actual.name,
+                expect.name.clone().into_bytes(),
+                "different child bucket name under: {}",
+                parent
+            );
+            let actual_child_buckets = actual.iter_buckets().collect::<Vec<_>>();
+            assert_buckets_equal(
+                format!("{}/{}", parent, expect.name),
+                &actual_child_buckets,
+                &expect.buckets,
+            );
+        }
+    }
 
     #[test]
     fn test_iter_buckets() {
@@ -676,43 +726,13 @@ mod tests {
                 )
                 .build(),
         );
-        let buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            buckets
-                .iter()
-                .map(|bucket| bucket.name.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                b"b0".to_vec(),
-                b"b1".to_vec(),
-                b"b2".to_vec(),
-                b"b3".to_vec(),
-                b"b4".to_vec(),
-            ]
-        );
+        let actual_buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
 
-        let buckets0 = buckets[0].iter_buckets().collect::<Vec<_>>();
-        assert_eq!(
-            buckets0
-                .iter()
-                .map(|bucket| bucket.name.clone())
-                .collect::<Vec<_>>(),
-            Vec::<Vec<_>>::new(),
-        );
+        let content =
+            fs::read_to_string(format!("{}/testdata/data.json", env!("CARGO_MANIFEST_DIR")))
+                .expect("Unable to read file");
+        let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
 
-        let buckets1 = buckets[1].iter_buckets().collect::<Vec<_>>();
-        assert_eq!(
-            buckets1
-                .iter()
-                .map(|bucket| bucket.name.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                b"bb00".to_vec(),
-                b"bb01".to_vec(),
-                b"bb02".to_vec(),
-                b"bb03".to_vec(),
-                b"bb04".to_vec()
-            ]
-        );
+        assert_buckets_equal(String::from(""), &actual_buckets, &expect_buckets);
     }
 }
