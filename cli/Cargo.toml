@@ -10,6 +10,8 @@ categories = ["command-line-utilities", "database-implementations"]
 keywords = ["cli", "bbolt", "database", "db"]
 rust-version = "1.81"
 authors = ["lsytj0413 <lsytj0413@gmail.com>"]
+build = "build.rs"
+publish = false
 
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
@@ -25,6 +27,20 @@ tokio = { version = "1.44.1", default-features = false, features = [
 ] }
 ancla = { path = "../crates/ancla" }
 
+[build-dependencies]
+vergen = { version = "8.0.0", default-features = false, features = [
+    "build",
+    "git",
+    "gitcl",
+    "cargo",
+] }
+
+
 [[bin]]
 name = "boltcli"
 path = "src/main.rs"
+
+[profile.release]
+strip = true
+opt-level = 3
+lto = true
