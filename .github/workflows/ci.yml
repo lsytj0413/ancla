@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [warp-ubuntu-latest-x64-16x]
+        os: [ubuntu-latest, ubuntu-22.04, ubuntu-24.04]
     env:
       RUST_BACKTRACE: full
     steps:
