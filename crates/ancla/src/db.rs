@@ -428,17 +428,17 @@ impl DB {
             for leaf_item in leaf_elements {
                 match leaf_item {
                     LeafElement::KeyValue(kv) => {
-                        if kv.key == key.as_bytes() && buckets.len() == 0 {
+                        if kv.key == key.as_bytes() && buckets.is_empty() {
                             return Some(kv);
                         }
                     }
                     LeafElement::Bucket { name, pgid } => {
-                        if buckets.len() == 0 {
+                        if buckets.is_empty() {
                             continue;
                         }
 
                         if name == buckets[0].as_bytes() {
-                            return self.get_key_value_inner(&buckets[1..].to_vec(), key, pgid);
+                            return self.get_key_value_inner(&buckets[1..], key, pgid);
                         }
                     }
                     LeafElement::InlineBucket { name, items } => {
@@ -456,7 +456,7 @@ impl DB {
                     }
                 }
             }
-            return None;
+            None
         } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
             let branch_elements = self.read_page_branch_elements(&data);
             let r =
@@ -735,10 +735,15 @@ mod tests {
 
     #[test]
     fn test_iter_buckets() {
+        let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         let db = DB::build(
             AnclaOptions::builder()
                 .db_path(
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                    root_dir
                         .join("testdata")
                         .join("data.db")
                         .to_str()
@@ -750,7 +755,7 @@ mod tests {
         let actual_buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
 
         let content =
-            fs::read_to_string(format!("{}/testdata/data.json", env!("CARGO_MANIFEST_DIR")))
+            fs::read_to_string(format!("{}/testdata/data.json", root_dir.to_str().unwrap()))
                 .expect("Unable to read file");
         let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
 
