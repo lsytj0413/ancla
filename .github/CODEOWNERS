@@ -1,0 +1,8 @@
+# <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners>
+
+# Match all files, default owners for everything in the repo, Unless a later match takes precedence
+* @lsytj0413
+
+# The last matching pattern takes the most precedence, if a pull request that only modifies Rust files
+# only below owners will be requested for a review
+*.rs @lsytj0413
