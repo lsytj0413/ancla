@@ -24,7 +24,8 @@
         "ghcr.io/devcontainers-extra/features/protoc:1": {
             "version": "30.2"
         },
-        "ghcr.io/devcontainers-community/features/llvm": {}
+        "ghcr.io/devcontainers-community/features/llvm": {},
+        "ghcr.io/guiyomh/features/just:0": {}
     },
     "containerEnv": {
         "TZ": "Asia/Shanghai"
@@ -64,7 +65,8 @@
                 "ms-azuretools.vscode-docker",
                 "github.copilot",
                 "redhat.vscode-yaml",
-                "xaver.clang-format"
+                "xaver.clang-format",
+                "skellock.just@2.0.0"
             ]
         }
     },
