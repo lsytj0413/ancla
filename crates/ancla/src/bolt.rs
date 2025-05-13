@@ -27,6 +27,7 @@ use binrw::BinRead;
 use bitflags::bitflags;
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct Page {
     // is the identifier of the page, it start from 0,
@@ -38,6 +39,7 @@ pub(crate) struct Page {
     // txid is current available.
     pub(crate) id: Pgid,
     // indicate which type this page is.
+    #[cfg_attr(feature = "binrw", br(parse_with = pageflag_custom_parse))]
     pub(crate) flags: PageFlag,
     // number of element in this page, if the page is freelist page:
     // 1. if value < 0xFFFF, it's the number of pageid
@@ -51,6 +53,16 @@ pub(crate) struct Page {
 pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<Page>();
 
 impl Page {
+    #[cfg(feature = "binrw")]
+    fn decode(data: &[u8]) -> Self {
+        let mut cursor = std::io::Cursor::new(data);
+        let mut options = binrw::ReadOptions::default();
+        options.endian = binrw::Endian::Little;
+        options.offset = 0;
+        Self::read_options(&mut cursor, &options, ()).unwrap()
+    }
+
+    #[cfg(not(feature = "binrw"))]
     fn decode(data: &[u8]) -> Self {
         Page {
             id: Pgid(utils::read_value::<u64>(data, 0)),
@@ -115,6 +127,19 @@ impl PageFlag {
     pub fn as_u16(&self) -> u16 {
         self.bits()
     }
+}
+
+#[cfg(feature = "binrw")]
+fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
+    reader: &mut R,
+    _ro: &binrw::ReadOptions,
+    _: (),
+) -> binrw::BinResult<PageFlag> {
+    let mut buf = [0; 2];
+    reader.read_exact(&mut buf).unwrap();
+    Ok(PageFlag::from_bits_truncate(utils::read_value::<u16>(
+        &buf, 0,
+    )))
 }
 
 #[derive(Debug, Clone, Copy)]
