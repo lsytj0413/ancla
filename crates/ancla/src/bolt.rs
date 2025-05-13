@@ -20,7 +20,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::{errors, utils};
+use crate::errors;
+use crate::utils;
+#[cfg(feature = "binrw")]
+use binrw::BinRead;
 use bitflags::bitflags;
 
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +50,17 @@ pub(crate) struct Page {
 
 pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<Page>();
 
+impl Page {
+    fn decode(data: &[u8]) -> Self {
+        Page {
+            id: Pgid(utils::read_value::<u64>(data, 0)),
+            flags: PageFlag::from_bits_truncate(utils::read_value::<u16>(data, 8)),
+            count: utils::read_value::<u16>(data, 10),
+            overflow: utils::read_value::<u32>(data, 12),
+        }
+    }
+}
+
 impl TryFrom<&[u8]> for Page {
     type Error = errors::DatabaseError;
 
@@ -58,16 +72,12 @@ impl TryFrom<&[u8]> for Page {
             });
         }
 
-        Ok(Page {
-            id: Pgid(utils::read_value::<u64>(data, 0)),
-            flags: PageFlag::from_bits_truncate(utils::read_value::<u16>(data, 8)),
-            count: utils::read_value::<u16>(data, 10),
-            overflow: utils::read_value::<u32>(data, 12),
-        })
+        Ok(Self::decode(data))
     }
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub(crate) struct Pgid(pub(crate) u64);
@@ -108,6 +118,7 @@ impl PageFlag {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct Meta {
     // The magic number of bolt database, must be MAGIC_NUMBER.
@@ -132,6 +143,33 @@ pub(crate) struct Meta {
     pub(crate) checksum: u64,
 }
 
+impl Meta {
+    #[cfg(not(feature = "binrw"))]
+    fn decode(data: &[u8]) -> Self {
+        Meta {
+            magic: utils::read_value::<u32>(data, 16),
+            version: utils::read_value::<u32>(data, 20),
+            page_size: utils::read_value::<u32>(data, 24),
+            _flag: 0,
+            root_pgid: Pgid(utils::read_value::<u64>(data, 32)),
+            root_sequence: utils::read_value::<u64>(data, 40),
+            freelist_pgid: Pgid(utils::read_value::<u64>(data, 48)),
+            max_pgid: Pgid(utils::read_value::<u64>(data, 56)),
+            txid: utils::read_value::<u64>(data, 64),
+            checksum: utils::read_value::<u64>(data, 72),
+        }
+    }
+
+    #[cfg(feature = "binrw")]
+    fn decode(data: &[u8]) -> Self {
+        let mut cursor = std::io::Cursor::new(data.get(16..80).unwrap());
+        let mut options = binrw::ReadOptions::default();
+        options.endian = binrw::Endian::Little;
+        options.offset = 0;
+        Self::read_options(&mut cursor, &options, ()).unwrap()
+    }
+}
+
 impl TryFrom<&[u8]> for Meta {
     type Error = errors::DatabaseError;
 
@@ -143,22 +181,12 @@ impl TryFrom<&[u8]> for Meta {
             });
         }
 
-        Ok(Meta {
-            magic: utils::read_value::<u32>(data, 16),
-            version: utils::read_value::<u32>(data, 20),
-            page_size: utils::read_value::<u32>(data, 24),
-            _flag: 0,
-            root_pgid: Pgid(utils::read_value::<u64>(data, 32)),
-            root_sequence: utils::read_value::<u64>(data, 40),
-            freelist_pgid: Pgid(utils::read_value::<u64>(data, 48)),
-            max_pgid: Pgid(utils::read_value::<u64>(data, 56)),
-            txid: utils::read_value::<u64>(data, 64),
-            checksum: utils::read_value::<u64>(data, 72),
-        })
+        Ok(Self::decode(data))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct BranchPageElement {
     // pos is the offset of the element's data in the page,
@@ -168,6 +196,26 @@ pub(crate) struct BranchPageElement {
     pub(crate) ksize: u32,
     // the next-level pageid.
     pub(crate) pgid: Pgid,
+}
+
+impl BranchPageElement {
+    #[cfg(not(feature = "binrw"))]
+    fn decode(data: &[u8]) -> Self {
+        BranchPageElement {
+            pos: utils::read_value::<u32>(data, 0),
+            ksize: utils::read_value::<u32>(data, 4),
+            pgid: Pgid(utils::read_value::<u64>(data, 8)),
+        }
+    }
+
+    #[cfg(feature = "binrw")]
+    fn decode(data: &[u8]) -> Self {
+        let mut cursor = std::io::Cursor::new(data);
+        let mut options = binrw::ReadOptions::default();
+        options.endian = binrw::Endian::Little;
+        options.offset = 0;
+        Self::read_options(&mut cursor, &options, ()).unwrap()
+    }
 }
 
 impl TryFrom<&[u8]> for BranchPageElement {
@@ -181,15 +229,12 @@ impl TryFrom<&[u8]> for BranchPageElement {
             });
         }
 
-        Ok(BranchPageElement {
-            pos: utils::read_value::<u32>(data, 0),
-            ksize: utils::read_value::<u32>(data, 4),
-            pgid: Pgid(utils::read_value::<u64>(data, 8)),
-        })
+        Ok(Self::decode(data))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct LeafPageElement {
     // indicate what type of the element, if flags is 1, it's a bucket,
@@ -204,6 +249,27 @@ pub(crate) struct LeafPageElement {
     pub(crate) vsize: u32,
 }
 
+impl LeafPageElement {
+    #[cfg(not(feature = "binrw"))]
+    fn decode(data: &[u8]) -> Self {
+        LeafPageElement {
+            flags: utils::read_value::<u32>(data, 0),
+            pos: utils::read_value::<u32>(data, 4),
+            ksize: utils::read_value::<u32>(data, 8),
+            vsize: utils::read_value::<u32>(data, 12),
+        }
+    }
+
+    #[cfg(feature = "binrw")]
+    fn decode(data: &[u8]) -> Self {
+        let mut cursor = std::io::Cursor::new(data);
+        let mut options = binrw::ReadOptions::default();
+        options.endian = binrw::Endian::Little;
+        options.offset = 0;
+        Self::read_options(&mut cursor, &options, ()).unwrap()
+    }
+}
+
 impl TryFrom<&[u8]> for LeafPageElement {
     type Error = errors::DatabaseError;
 
@@ -215,16 +281,12 @@ impl TryFrom<&[u8]> for LeafPageElement {
             });
         }
 
-        Ok(LeafPageElement {
-            flags: utils::read_value::<u32>(data, 0),
-            pos: utils::read_value::<u32>(data, 4),
-            ksize: utils::read_value::<u32>(data, 8),
-            vsize: utils::read_value::<u32>(data, 12),
-        })
+        Ok(Self::decode(data))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 // Bucket represents the on-file representation of a bucket. It is stored as
 // the `value` of a bucket key. If the root is 0, this bucket is small enough
@@ -233,6 +295,25 @@ pub(crate) struct Bucket {
     // the bucket's root-level page.
     pub(crate) root: Pgid,
     sequence: u64,
+}
+
+impl Bucket {
+    #[cfg(not(feature = "binrw"))]
+    fn decode(data: &[u8]) -> Self {
+        Bucket {
+            root: Pgid(utils::read_value::<u64>(data, 0)),
+            sequence: utils::read_value::<u64>(data, 8),
+        }
+    }
+
+    #[cfg(feature = "binrw")]
+    fn decode(data: &[u8]) -> Self {
+        let mut cursor = std::io::Cursor::new(data);
+        let mut options = binrw::ReadOptions::default();
+        options.endian = binrw::Endian::Little;
+        options.offset = 0;
+        Self::read_options(&mut cursor, &options, ()).unwrap()
+    }
 }
 
 impl TryFrom<&[u8]> for Bucket {
@@ -246,10 +327,7 @@ impl TryFrom<&[u8]> for Bucket {
             });
         }
 
-        Ok(Bucket {
-            root: Pgid(utils::read_value::<u64>(data, 0)),
-            sequence: utils::read_value::<u64>(data, 8),
-        })
+        Ok(Self::decode(data))
     }
 }
 
