@@ -56,7 +56,7 @@ check-fmt:
     cargo fmt --all -- --check
 
 clippy: (_target-installed target)
-    cargo clippy {{ _target-option }} --all-targets --workspace -- -D warnings
+    cargo hack clippy {{ _target-option }} --all-targets --workspace --each-feature -- -D warnings
 
 lint: check-fmt clippy
 
@@ -70,7 +70,7 @@ run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed target)
-    cargo test run {{ _target-option }} --all-features --target-dir target/tests
+    cargo test --all-features --target-dir target/tests
 
 flamegraph *flags:
     cargo flamegraph {{ _flamegraph_options }} {{ flags }}
