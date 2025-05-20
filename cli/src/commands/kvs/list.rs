@@ -20,9 +20,42 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-mod bolt;
-mod db;
-mod errors;
-mod utils;
+use anyhow::Result;
+use clap::Parser;
+use cling::prelude::*;
 
-pub use db::{AnclaOptions, Bucket, DbItem, Info, KeyValue, PageInfo, DB};
+#[derive(Run, Parser, Collect, Clone, Debug)]
+#[cling(run = "run_list")]
+pub struct List {}
+
+pub fn run_list(
+    _state: State<crate::cli_env::Env>,
+    _args: &List,
+    common_opts: &crate::opts::CommonOpts,
+) -> Result<()> {
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+
+    let iter = ancla::DB::iter_items(db);
+    for item in iter {
+        match item {
+            ancla::DbItem::KeyValue(kv) => {
+                println!(
+                    "Key: {:?}, Value: {:?}",
+                    String::from_utf8(kv.key),
+                    String::from_utf8(kv.value)
+                );
+            }
+            ancla::DbItem::Bucket(bucket) => {
+                println!("Bucket: {:?}", String::from_utf8(bucket.name));
+            }
+            ancla::DbItem::InlineBucket(name) => {
+                println!("InlineBucket: {:?}", String::from_utf8(name));
+            }
+        }
+    }
+
+    Ok(())
+}

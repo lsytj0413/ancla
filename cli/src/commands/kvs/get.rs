@@ -20,9 +20,37 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-mod bolt;
-mod db;
-mod errors;
-mod utils;
+use anyhow::Result;
+use clap::Parser;
+use cling::prelude::*;
 
-pub use db::{AnclaOptions, Bucket, DbItem, Info, KeyValue, PageInfo, DB};
+#[derive(Run, Parser, Collect, Clone, Debug)]
+#[cling(run = "run_get")]
+pub struct Get {
+    #[clap(long)]
+    pub buckets: Vec<String>,
+    #[clap(long)]
+    pub key: String,
+}
+
+pub fn run_get(
+    _state: State<crate::cli_env::Env>,
+    args: &Get,
+    common_opts: &crate::opts::CommonOpts,
+) -> Result<()> {
+    println!("{:?}", args);
+
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DB::build(options);
+
+    let kv = ancla::DB::get_key_value(db, &args.buckets, &args.key);
+    if let Some(kv) = kv {
+        println!("Key: {:?}", String::from_utf8(kv.key));
+        println!("Value: {:?}", String::from_utf8(kv.value));
+    } else {
+        println!("Key not found");
+    }
+    Ok(())
+}

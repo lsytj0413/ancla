@@ -133,13 +133,11 @@ pub struct KeyValue {
 }
 
 #[derive(Clone)]
-enum DbItem {
-    #[allow(dead_code)]
-    Branch(BranchElement),
+pub enum DbItem {
     #[allow(dead_code)]
     KeyValue(KeyValue),
     #[allow(dead_code)]
-    InlineBucket(),
+    InlineBucket(Vec<u8>),
     #[allow(dead_code)]
     Bucket(Bucket),
 }
@@ -147,13 +145,66 @@ enum DbItem {
 #[allow(dead_code)]
 struct DbItemIterator {
     db: Rc<RefCell<DB>>,
+    stack: Vec<IterItem>,
 }
 
 impl Iterator for DbItemIterator {
     type Item = DbItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        loop {
+            if self.stack.is_empty() {
+                return None;
+            }
+
+            let item = self.stack.index_mut(self.stack.len() - 1);
+            let data = self.db.borrow_mut().read_page(item.page_id.into());
+            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+                let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
+                if item.index < leaf_elements.len() {
+                    let elem = leaf_elements[item.index].clone();
+                    item.index += 1;
+                    match elem {
+                        LeafElement::Bucket { name, pgid } => {
+                            self.stack.push(IterItem {
+                                page_id: From::from(pgid),
+                                index: 0,
+                            });
+
+                            return Some(DbItem::Bucket(Bucket {
+                                parent_bucket: Vec::new(),
+                                is_inline: false,
+                                page_id: pgid,
+                                name,
+                                db: self.db.clone(),
+                            }));
+                        }
+                        LeafElement::InlineBucket { name, .. } => {
+                            return Some(DbItem::InlineBucket(name));
+                        }
+                        LeafElement::KeyValue(kv) => {
+                            return Some(DbItem::KeyValue(kv));
+                        }
+                    }
+                }
+
+                self.stack.pop();
+            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+                let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
+                if item.index < branch_elements.len() {
+                    let elem = branch_elements[item.index].clone();
+                    item.index += 1;
+                    self.stack.push(IterItem {
+                        page_id: From::from(elem.pgid),
+                        index: 0,
+                    });
+                    continue;
+                }
+
+                self.stack.pop();
+            }
+        }
     }
 }
 
@@ -341,13 +392,18 @@ impl DB {
         }))
     }
 
-    #[allow(dead_code)]
-    fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
+    pub fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
         db.borrow_mut().initialize();
         #[allow(unused_variables)]
         let meta = db.borrow_mut().get_meta();
 
-        DbItemIterator { db: db.clone() }
+        DbItemIterator {
+            db: db.clone(),
+            stack: vec![IterItem {
+                page_id: meta.root_pgid,
+                index: 0,
+            }],
+        }
     }
 
     pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
