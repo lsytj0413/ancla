@@ -47,6 +47,7 @@ pub enum Commands {
     Pages(crate::commands::pages::PageCommand),
     /// Show info about the database
     Info(crate::commands::info::InfoCommand),
-    /// Get key value
-    KV(crate::commands::kvs::KVCommand),
+
+    #[clap(subcommand)]
+    KV(crate::commands::kvs::Kvs),
 }

@@ -10,6 +10,7 @@ add() {
             if [[ ! -z "first_line" ]]; then
                 sed -i '21a\\' ${file}.tmp
             fi
+            sed -i 's/^\/\/ $/\/\//' ${file}.tmp
             mv ${file}.tmp $file
 
             echo "Added license to $file"
