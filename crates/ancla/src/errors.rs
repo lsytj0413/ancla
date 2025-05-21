@@ -26,4 +26,25 @@ use thiserror::Error;
 pub enum DatabaseError {
     #[error("data buffer is too small, expect {expect}, got {got}")]
     TooSmallData { expect: usize, got: usize },
+
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error("could not operate on file {0}: {1}")]
+    IOError(String, String),
+
+    #[error("page {id} type is invalid, expect {expect}, got {got}")]
+    InvalidPageType { expect: u16, got: u16, id: u64 },
+
+    #[error("page {id} checksum is invalid, expect {expect}, got {got}")]
+    InvalidPageChecksum { expect: u64, got: u64, id: u64 },
+
+    #[error("page {id} magic is invalid, expect {expect}, got {got}")]
+    InvalidPageMagic { expect: u32, got: u32, id: u64 },
+
+    #[error("page {id} version is invalid, expect {expect}, got {got}")]
+    InvalidPageVersion { expect: u32, got: u32, id: u64 },
+
+    #[error("file's meta is invalid")]
+    InvalidMeta,
 }

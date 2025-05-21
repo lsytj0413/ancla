@@ -36,7 +36,7 @@ pub fn run_list(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::build(options);
+    let db = ancla::DB::open(options)?;
 
     let iter = ancla::DB::iter_items(db);
     for item in iter {

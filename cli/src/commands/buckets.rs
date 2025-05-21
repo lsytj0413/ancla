@@ -40,7 +40,7 @@ pub fn run_buckets(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::build(options);
+    let db = ancla::DB::open(options)?;
     let buckets = iter_buckets(db);
     print_buckets(&buckets);
 
