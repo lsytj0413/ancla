@@ -38,7 +38,7 @@ pub fn run_pages(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::build(options);
+    let db = ancla::DB::open(options)?;
 
     let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
     pages.sort();

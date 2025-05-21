@@ -43,7 +43,7 @@ pub fn run_get(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::build(options);
+    let db = ancla::DB::open(options)?;
 
     let kv = ancla::DB::get_key_value(db, &args.buckets, &args.key);
     if let Some(kv) = kv {

@@ -36,7 +36,7 @@ pub fn run_info(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::build(options);
+    let db = ancla::DB::open(options)?;
     let info = ancla::DB::info(db);
     println!("Page Size: {:?}", info.page_size);
     Ok(())

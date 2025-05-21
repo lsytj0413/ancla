@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 use crate::bolt::{self, PAGE_HEADER_SIZE};
+use crate::errors::DatabaseError;
 use fnv_rs::{Fnv64, FnvHasher};
 use std::cell::RefCell;
 use std::ops::IndexMut;
@@ -298,56 +299,64 @@ impl DB {
         leaf_elements
     }
 
-    fn read_meta_page(&mut self, data: &[u8]) -> bolt::Meta {
-        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+    fn read_meta_page(&mut self, data: &[u8], id: u64) -> Result<bolt::Meta, DatabaseError> {
+        let page: bolt::Page = TryFrom::try_from(data)?;
         if !page.flags.contains(bolt::PageFlag::MetaPageFlag) {
-            panic!(
-                "read_page_overflow: page 0 is not a meta page, expect flag {}, got {}",
-                bolt::PageFlag::MetaPageFlag.as_u16(),
-                page.flags.as_u16()
-            );
+            return Err(DatabaseError::InvalidPageType {
+                expect: bolt::PageFlag::MetaPageFlag.as_u16(),
+                got: page.flags.as_u16(),
+                id,
+            });
         }
-        let actual_checksum =
-            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
-        let meta: bolt::Meta = TryFrom::try_from(data).unwrap();
+
+        let actual_checksum = u64::from_be_bytes(
+            Fnv64::hash(&data[16..72])
+                .as_bytes()
+                .try_into()
+                .expect("calculate checksum successfully"),
+        );
+        let meta: bolt::Meta = TryFrom::try_from(data)?;
         if meta.checksum != actual_checksum {
-            panic!(
-                "checksum mismatch, expect {}, got {}",
-                actual_checksum, meta.checksum
-            );
+            return Err(DatabaseError::InvalidPageChecksum {
+                expect: actual_checksum,
+                got: meta.checksum,
+                id,
+            });
         }
         if meta.magic != bolt::MAGIC_NUMBER {
-            panic!(
-                "invalid magic number, expect {}, got {}",
-                bolt::MAGIC_NUMBER,
-                meta.magic
-            );
+            return Err(DatabaseError::InvalidPageMagic {
+                expect: bolt::MAGIC_NUMBER,
+                got: meta.magic,
+                id,
+            });
         }
         if meta.version != bolt::DATAFILE_VERSION {
-            panic!(
-                "invalid version number, expect {}, got {}",
-                bolt::DATAFILE_VERSION,
-                meta.version
-            );
+            return Err(DatabaseError::InvalidPageVersion {
+                expect: bolt::DATAFILE_VERSION,
+                got: meta.version,
+                id,
+            });
         }
-        meta
+        Ok(meta)
     }
 
-    fn initialize(&mut self) {
+    fn initialize(&mut self) -> Result<(), DatabaseError> {
         let data0 = self.read_page(0);
-        let meta0 = self.read_meta_page(&data0);
+        let meta0 = self.read_meta_page(&data0, 0)?;
         self.meta0 = Some(meta0);
 
         let data1 = self.read_page(1);
-        let meta1 = self.read_meta_page(&data1);
+        let meta1 = self.read_meta_page(&data1, 1)?;
         self.meta1 = Some(meta1);
+
+        if self.meta0.is_none() && self.meta1.is_none() {
+            return Err(DatabaseError::InvalidMeta);
+        }
+
+        Ok(())
     }
 
     fn get_meta(&mut self) -> bolt::Meta {
-        if self.meta0.is_none() && self.meta1.is_none() {
-            panic!("meta0 and meta1 are not initialized");
-        }
-
         if self.meta0.is_none() {
             return self.meta1.unwrap();
         }
@@ -382,18 +391,24 @@ impl DB {
         freelist
     }
 
-    pub fn build(ancla_options: AnclaOptions) -> Rc<RefCell<DB>> {
-        let file = File::open(ancla_options.db_path.clone()).unwrap();
-        Rc::new(RefCell::new(DB {
+    pub fn open(ancla_options: AnclaOptions) -> Result<Rc<RefCell<DB>>, DatabaseError> {
+        let file = File::open(ancla_options.db_path.clone()).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => DatabaseError::FileNotFound(ancla_options.db_path.clone()),
+            _ => DatabaseError::IOError(ancla_options.db_path.clone(), e.to_string()),
+        })?;
+
+        let db = Rc::new(RefCell::new(DB {
             file,
             page_datas: BTreeMap::new(),
             meta0: None,
             meta1: None,
-        }))
+        }));
+
+        db.borrow_mut().initialize()?;
+        Ok(db)
     }
 
     pub fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
-        db.borrow_mut().initialize();
         #[allow(unused_variables)]
         let meta = db.borrow_mut().get_meta();
 
@@ -407,7 +422,6 @@ impl DB {
     }
 
     pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
-        db.borrow_mut().initialize();
         let meta = db.borrow_mut().get_meta();
 
         BucketIterator {
@@ -421,7 +435,6 @@ impl DB {
     }
 
     pub fn iter_pages(db: Rc<RefCell<DB>>) -> impl Iterator<Item = PageInfo> {
-        db.borrow_mut().initialize();
         let meta = db.borrow_mut().get_meta();
 
         PageIterator {
@@ -452,7 +465,6 @@ impl DB {
     }
 
     pub fn info(db: Rc<RefCell<DB>>) -> Info {
-        db.borrow_mut().initialize();
         let meta = db.borrow_mut().get_meta();
 
         Info {
@@ -465,7 +477,6 @@ impl DB {
         buckets: &[String],
         key: &String,
     ) -> Option<KeyValue> {
-        db.borrow_mut().initialize();
         let meta = db.borrow_mut().get_meta();
         db.borrow_mut()
             .get_key_value_inner(buckets, key, meta.root_pgid.into())
@@ -796,7 +807,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DB::build(
+        let db = DB::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -807,7 +818,8 @@ mod tests {
                         .to_string(),
                 )
                 .build(),
-        );
+        )
+        .expect("open db successfully");
         let actual_buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
 
         let content =
