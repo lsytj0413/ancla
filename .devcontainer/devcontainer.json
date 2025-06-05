@@ -43,6 +43,7 @@
         }
     ],
     "postCreateCommand": "",
+    "postStartCommand": "sudo chmod 666 /var/run/docker.sock",
     "customizations": {
         // Configure properties specific to VS Code.
         "vscode": {
