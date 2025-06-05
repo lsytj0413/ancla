@@ -38,9 +38,22 @@ use typed_builder::TypedBuilder;
 pub struct DB {
     file: File,
 
-    page_datas: BTreeMap<bolt::Pgid, Arc<Vec<u8>>>,
+    page_datas: BTreeMap<bolt::Pgid, Arc<Page>>,
     meta0: Option<bolt::Meta>,
     meta1: Option<bolt::Meta>,
+}
+
+struct Page {
+    id: u64,
+    typ: PageType,
+    overflow: u64,
+    data: Vec<u8>,
+    elem: Option<Element>,
+}
+
+enum Element {
+    Branch(Vec<BranchElement>),
+    Leaf(Vec<LeafElement>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -160,50 +173,50 @@ impl Iterator for DbItemIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = self.db.borrow_mut().read_page(item.page_id.into());
-            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-                let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
-                if item.index < leaf_elements.len() {
-                    let elem = leaf_elements[item.index].clone();
-                    item.index += 1;
-                    match elem {
-                        LeafElement::Bucket { name, pgid } => {
-                            self.stack.push(IterItem {
-                                page_id: From::from(pgid),
-                                index: 0,
-                            });
+            match data.elem.as_ref().expect("must be leaf or branch") {
+                Element::Leaf(leaf_elements) => {
+                    if item.index < leaf_elements.len() {
+                        let elem = leaf_elements[item.index].clone();
+                        item.index += 1;
+                        match elem {
+                            LeafElement::Bucket { name, pgid } => {
+                                self.stack.push(IterItem {
+                                    page_id: From::from(pgid),
+                                    index: 0,
+                                });
 
-                            return Some(DbItem::Bucket(Bucket {
-                                parent_bucket: Vec::new(),
-                                is_inline: false,
-                                page_id: pgid,
-                                name,
-                                db: self.db.clone(),
-                            }));
-                        }
-                        LeafElement::InlineBucket { name, .. } => {
-                            return Some(DbItem::InlineBucket(name));
-                        }
-                        LeafElement::KeyValue(kv) => {
-                            return Some(DbItem::KeyValue(kv));
+                                return Some(DbItem::Bucket(Bucket {
+                                    parent_bucket: Vec::new(),
+                                    is_inline: false,
+                                    page_id: pgid,
+                                    name,
+                                    db: self.db.clone(),
+                                }));
+                            }
+                            LeafElement::InlineBucket { name, .. } => {
+                                return Some(DbItem::InlineBucket(name));
+                            }
+                            LeafElement::KeyValue(kv) => {
+                                return Some(DbItem::KeyValue(kv));
+                            }
                         }
                     }
-                }
 
-                self.stack.pop();
-            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-                let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
-                if item.index < branch_elements.len() {
-                    let elem = branch_elements[item.index].clone();
-                    item.index += 1;
-                    self.stack.push(IterItem {
-                        page_id: From::from(elem.pgid),
-                        index: 0,
-                    });
-                    continue;
+                    self.stack.pop();
                 }
+                Element::Branch(branch_elements) => {
+                    if item.index < branch_elements.len() {
+                        let elem = branch_elements[item.index].clone();
+                        item.index += 1;
+                        self.stack.push(IterItem {
+                            page_id: From::from(elem.pgid),
+                            index: 0,
+                        });
+                        continue;
+                    }
 
-                self.stack.pop();
+                    self.stack.pop();
+                }
             }
         }
     }
@@ -220,7 +233,7 @@ impl DB {
         data
     }
 
-    fn read_page(&mut self, page_id: u64) -> Arc<Vec<u8>> {
+    fn read_page(&mut self, page_id: u64) -> Arc<Page> {
         if let Some(data) = self.page_datas.get(&From::from(page_id)) {
             return Arc::clone(data);
         }
@@ -230,7 +243,32 @@ impl DB {
 
         let data_len = 4096 * (page.overflow + 1) as usize;
         let data = self.read(page_id * 4096, data_len);
-        let data = Arc::new(data);
+
+        let (typ, elem) = if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+            (
+                PageType::DataLeaf,
+                Some(Element::Leaf(self.read_page_leaf_elements(&data))),
+            )
+        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+            (
+                PageType::DataBranch,
+                Some(Element::Branch(self.read_page_branch_elements(&data))),
+            )
+        } else if page.flags.contains(bolt::PageFlag::MetaPageFlag) {
+            (PageType::Meta, None)
+        } else if page.flags.contains(bolt::PageFlag::FreelistPageFlag) {
+            (PageType::Freelist, None)
+        } else {
+            unreachable!("unknown type")
+        };
+
+        let data = Arc::new(Page {
+            id: page_id,
+            typ,
+            overflow: page.overflow as u64,
+            data,
+            elem,
+        });
         self.page_datas
             .insert(From::from(page_id), Arc::clone(&data));
         Arc::clone(&data)
@@ -342,11 +380,11 @@ impl DB {
 
     fn initialize(&mut self) -> Result<(), DatabaseError> {
         let data0 = self.read_page(0);
-        let meta0 = self.read_meta_page(&data0, 0)?;
+        let meta0 = self.read_meta_page(&data0.data, 0)?;
         self.meta0 = Some(meta0);
 
         let data1 = self.read_page(1);
-        let meta1 = self.read_meta_page(&data1, 1)?;
+        let meta1 = self.read_meta_page(&data1.data, 1)?;
         self.meta1 = Some(meta1);
 
         if self.meta0.is_none() && self.meta1.is_none() {
@@ -489,49 +527,48 @@ impl DB {
         pgid: u64,
     ) -> Option<KeyValue> {
         let data = self.read_page(pgid);
-        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-            let leaf_elements = self.read_page_leaf_elements(&data);
-            for leaf_item in leaf_elements {
-                match leaf_item {
-                    LeafElement::KeyValue(kv) => {
-                        if kv.key == key.as_bytes() && buckets.is_empty() {
-                            return Some(kv);
-                        }
-                    }
-                    LeafElement::Bucket { name, pgid } => {
-                        if buckets.is_empty() {
-                            continue;
-                        }
 
-                        if name == buckets[0].as_bytes() {
-                            return self.get_key_value_inner(&buckets[1..], key, pgid);
+        match data.elem.as_ref()? {
+            Element::Branch(branch_elements) => {
+                let r = branch_elements
+                    .binary_search_by_key(&key.as_bytes(), |elem| elem.key.as_slice());
+                let index = r.unwrap_or_else(|idx| if idx > 0 { idx - 1 } else { 0 });
+                self.get_key_value_inner(buckets, key, branch_elements[index].pgid)
+            }
+            Element::Leaf(leaf_elements) => {
+                for leaf_item in leaf_elements {
+                    match leaf_item {
+                        LeafElement::KeyValue(kv) => {
+                            if kv.key == key.as_bytes() && buckets.is_empty() {
+                                return Some(kv.clone());
+                            }
                         }
-                    }
-                    LeafElement::InlineBucket { name, items } => {
-                        if buckets.len() != 1 {
-                            continue;
-                        }
+                        LeafElement::Bucket { name, pgid } => {
+                            if buckets.is_empty() {
+                                continue;
+                            }
 
-                        if name == buckets[0].as_bytes() {
-                            for item in items {
-                                if item.key == key.as_bytes() {
-                                    return Some(item);
+                            if name == buckets[0].as_bytes() {
+                                return self.get_key_value_inner(&buckets[1..], key, *pgid);
+                            }
+                        }
+                        LeafElement::InlineBucket { name, items } => {
+                            if buckets.len() != 1 {
+                                continue;
+                            }
+
+                            if name == buckets[0].as_bytes() {
+                                for item in items {
+                                    if item.key == key.as_bytes() {
+                                        return Some(item.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                None
             }
-            None
-        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-            let branch_elements = self.read_page_branch_elements(&data);
-            let r =
-                branch_elements.binary_search_by_key(&key.as_bytes(), |elem| elem.key.as_slice());
-            let index = r.unwrap_or_else(|idx| if idx > 0 { idx - 1 } else { 0 });
-            return self.get_key_value_inner(buckets, key, branch_elements[index].pgid);
-        } else {
-            return None;
         }
     }
 }
@@ -572,18 +609,18 @@ impl Iterator for PageIterator {
         }
 
         let data = self.db.borrow_mut().read_page(item.page_id);
-        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-        if page.flags.contains(bolt::PageFlag::MetaPageFlag) {
-            Some(PageInfo {
-                id: item.page_id,
+        if data.typ == PageType::Meta {
+            return Some(PageInfo {
+                id: data.id,
                 typ: PageType::Meta,
-                overflow: page.overflow as u64,
+                overflow: data.overflow,
                 capacity: 4096,
                 used: 80,
                 parent_page_id: None,
-            })
-        } else if page.flags.contains(bolt::PageFlag::FreelistPageFlag) {
-            let freelist = self.db.borrow_mut().read_freelist(&data, page.count);
+            });
+        } else if data.typ == PageType::Freelist {
+            let page: bolt::Page = TryFrom::try_from(data.data.as_slice()).unwrap();
+            let freelist = self.db.borrow_mut().read_freelist(&data.data, page.count);
             for &i in &freelist {
                 // See
                 // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
@@ -603,48 +640,52 @@ impl Iterator for PageIterator {
                 used: 16 + (page.count as u64 * 8),
                 parent_page_id: None,
             });
-        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-            let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
-            for branch_item in branch_elements {
-                self.stack.push(PageIterItem {
-                    parent_page_id: Some(item.page_id),
-                    page_id: branch_item.pgid,
-                    typ: PageType::DataBranch,
-                });
-            }
+        }
 
-            return Some(PageInfo {
-                id: item.page_id,
-                typ: PageType::DataBranch,
-                overflow: page.overflow as u64,
-                capacity: 4096,
-                used: 16 + (page.count as u64 * 12),
-                parent_page_id: item.parent_page_id,
-            });
-        } else {
-            let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
-            for leaf_item in leaf_elements {
-                if let LeafElement::Bucket {
-                    name: _,
-                    pgid: pg_id,
-                } = leaf_item
-                {
+        let page: bolt::Page = TryFrom::try_from(data.data.as_slice()).unwrap();
+        match data.elem.as_ref().expect("must be leaf or branch") {
+            Element::Branch(branch_elements) => {
+                for branch_item in branch_elements {
                     self.stack.push(PageIterItem {
                         parent_page_id: Some(item.page_id),
-                        page_id: pg_id,
-                        typ: PageType::DataLeaf,
+                        page_id: branch_item.pgid,
+                        typ: PageType::DataBranch,
                     });
                 }
-            }
 
-            return Some(PageInfo {
-                id: item.page_id,
-                typ: PageType::DataLeaf,
-                overflow: page.overflow as u64,
-                capacity: 4096,
-                used: 16 + (page.count as u64 * 12),
-                parent_page_id: item.parent_page_id,
-            });
+                Some(PageInfo {
+                    id: item.page_id,
+                    typ: PageType::DataBranch,
+                    overflow: data.overflow,
+                    capacity: 4096,
+                    used: 16 + (page.count as u64 * 12),
+                    parent_page_id: item.parent_page_id,
+                })
+            }
+            Element::Leaf(leaf_elements) => {
+                for leaf_item in leaf_elements {
+                    if let LeafElement::Bucket {
+                        name: _,
+                        pgid: pg_id,
+                    } = leaf_item
+                    {
+                        self.stack.push(PageIterItem {
+                            parent_page_id: Some(item.page_id),
+                            page_id: *pg_id,
+                            typ: PageType::DataLeaf,
+                        });
+                    }
+                }
+
+                Some(PageInfo {
+                    id: item.page_id,
+                    typ: PageType::DataLeaf,
+                    overflow: page.overflow as u64,
+                    capacity: 4096,
+                    used: 16 + (page.count as u64 * 12),
+                    parent_page_id: item.parent_page_id,
+                })
+            }
         }
     }
 }
@@ -671,56 +712,57 @@ impl Iterator for BucketIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = self.db.borrow_mut().read_page(item.page_id.into());
-            let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
-            if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
-                let leaf_elements = self.db.borrow_mut().read_page_leaf_elements(&data);
-                if item.index < leaf_elements.len() {
-                    let elem = leaf_elements[item.index].clone();
-                    item.index += 1;
-                    match elem {
-                        LeafElement::Bucket { name, pgid } => {
-                            return Some(Bucket {
-                                parent_bucket: self
-                                    .parent_bucket
-                                    .as_ref()
-                                    .map_or_else(Vec::new, |bucket| bucket.name.clone()),
-                                is_inline: false,
-                                page_id: pgid,
-                                name,
-                                db: self.db.clone(),
-                            });
-                        }
-                        LeafElement::InlineBucket { name, items: _ } => {
-                            return Some(Bucket {
-                                parent_bucket: self
-                                    .parent_bucket
-                                    .as_ref()
-                                    .map_or_else(Vec::new, |bucket| bucket.name.clone()),
-                                is_inline: true,
-                                page_id: 0,
-                                name,
-                                db: self.db.clone(),
-                            });
-                        }
-                        LeafElement::KeyValue(_) => {}
+
+            match data.elem.as_ref().expect("must be leaf or branch") {
+                Element::Branch(branch_elements) => {
+                    if item.index < branch_elements.len() {
+                        let elem = branch_elements[item.index].clone();
+                        item.index += 1;
+                        self.stack.push(IterItem {
+                            page_id: From::from(elem.pgid),
+                            index: 0,
+                        });
+                        continue;
                     }
-                    continue;
-                }
 
-                self.stack.pop();
-            } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
-                let branch_elements = self.db.borrow_mut().read_page_branch_elements(&data);
-                if item.index < branch_elements.len() {
-                    let elem = branch_elements[item.index].clone();
-                    item.index += 1;
-                    self.stack.push(IterItem {
-                        page_id: From::from(elem.pgid),
-                        index: 0,
-                    });
-                    continue;
+                    self.stack.pop();
                 }
+                Element::Leaf(leaf_elements) => {
+                    if item.index < leaf_elements.len() {
+                        let elem = leaf_elements[item.index].clone();
+                        item.index += 1;
+                        match elem {
+                            LeafElement::Bucket { name, pgid } => {
+                                return Some(Bucket {
+                                    parent_bucket: self
+                                        .parent_bucket
+                                        .as_ref()
+                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                    is_inline: false,
+                                    page_id: pgid,
+                                    name,
+                                    db: self.db.clone(),
+                                });
+                            }
+                            LeafElement::InlineBucket { name, items: _ } => {
+                                return Some(Bucket {
+                                    parent_bucket: self
+                                        .parent_bucket
+                                        .as_ref()
+                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                    is_inline: true,
+                                    page_id: 0,
+                                    name,
+                                    db: self.db.clone(),
+                                });
+                            }
+                            LeafElement::KeyValue(_) => {}
+                        }
+                        continue;
+                    }
 
-                self.stack.pop();
+                    self.stack.pop();
+                }
             }
         }
     }

@@ -81,3 +81,5 @@ _target-installed target:
     if ! rustup target list --installed | grep -qF '{{ target }}' 2>/dev/null ; then
         rustup target add '{{ target }}'
     fi
+
+verify: lint test
