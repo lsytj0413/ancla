@@ -84,28 +84,7 @@ pub struct Bucket {
     pub page_id: u64,
     pub is_inline: bool,
     pub name: Vec<u8>,
-    db: Rc<RefCell<DB>>,
-}
-
-impl Bucket {
-    pub fn iter_buckets(&self) -> impl Iterator<Item = Bucket> {
-        if self.is_inline {
-            return BucketIterator {
-                db: self.db.clone(),
-                parent_bucket: Some(self.clone()),
-                stack: Vec::new(),
-            };
-        }
-
-        BucketIterator {
-            db: self.db.clone(),
-            parent_bucket: Some(self.clone()),
-            stack: vec![IterItem {
-                page_id: From::from(self.page_id),
-                index: 0,
-            }],
-        }
-    }
+    pub depth: u64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -183,6 +162,8 @@ impl Iterator for DbItemIterator {
                                 self.stack.push(IterItem {
                                     page_id: From::from(pgid),
                                     index: 0,
+                                    depth: None,
+                                    parent_bucket: None,
                                 });
 
                                 return Some(DbItem::Bucket(Bucket {
@@ -190,7 +171,7 @@ impl Iterator for DbItemIterator {
                                     is_inline: false,
                                     page_id: pgid,
                                     name,
-                                    db: self.db.clone(),
+                                    depth: 0,
                                 }));
                             }
                             LeafElement::InlineBucket { name, .. } => {
@@ -211,6 +192,8 @@ impl Iterator for DbItemIterator {
                         self.stack.push(IterItem {
                             page_id: From::from(elem.pgid),
                             index: 0,
+                            depth: None,
+                            parent_bucket: None,
                         });
                         continue;
                     }
@@ -455,6 +438,8 @@ impl DB {
             stack: vec![IterItem {
                 page_id: meta.root_pgid,
                 index: 0,
+                depth: None,
+                parent_bucket: None,
             }],
         }
     }
@@ -464,10 +449,11 @@ impl DB {
 
         BucketIterator {
             db: db.clone(),
-            parent_bucket: None,
             stack: vec![IterItem {
                 page_id: meta.root_pgid,
                 index: 0,
+                depth: None,
+                parent_bucket: None,
             }],
         }
     }
@@ -692,13 +678,14 @@ impl Iterator for PageIterator {
 
 struct BucketIterator {
     db: Rc<RefCell<DB>>,
-    parent_bucket: Option<Bucket>,
     stack: Vec<IterItem>,
 }
 
 struct IterItem {
+    parent_bucket: Option<Bucket>,
     page_id: bolt::Pgid,
     index: usize,
+    depth: Option<u64>,
 }
 
 impl Iterator for BucketIterator {
@@ -712,15 +699,19 @@ impl Iterator for BucketIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = self.db.borrow_mut().read_page(item.page_id.into());
+            let parent_bucket = item.parent_bucket.clone();
 
             match data.elem.as_ref().expect("must be leaf or branch") {
                 Element::Branch(branch_elements) => {
                     if item.index < branch_elements.len() {
                         let elem = branch_elements[item.index].clone();
                         item.index += 1;
+                        let depth = item.depth;
                         self.stack.push(IterItem {
                             page_id: From::from(elem.pgid),
                             index: 0,
+                            depth,
+                            parent_bucket,
                         });
                         continue;
                     }
@@ -731,29 +722,34 @@ impl Iterator for BucketIterator {
                     if item.index < leaf_elements.len() {
                         let elem = leaf_elements[item.index].clone();
                         item.index += 1;
+                        let depth = item.depth.map(|depth| depth + 1).unwrap_or(0);
                         match elem {
                             LeafElement::Bucket { name, pgid } => {
+                                self.stack.push(IterItem {
+                                    page_id: From::from(pgid),
+                                    index: 0,
+                                    depth: Some(depth),
+                                    parent_bucket: parent_bucket.clone(),
+                                });
                                 return Some(Bucket {
-                                    parent_bucket: self
-                                        .parent_bucket
+                                    parent_bucket: parent_bucket
                                         .as_ref()
                                         .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: false,
                                     page_id: pgid,
                                     name,
-                                    db: self.db.clone(),
+                                    depth,
                                 });
                             }
                             LeafElement::InlineBucket { name, items: _ } => {
                                 return Some(Bucket {
-                                    parent_bucket: self
-                                        .parent_bucket
+                                    parent_bucket: parent_bucket
                                         .as_ref()
                                         .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: true,
                                     page_id: 0,
                                     name,
-                                    db: self.db.clone(),
+                                    depth: item.depth.map(|depth| depth + 1).unwrap_or(0),
                                 });
                             }
                             LeafElement::KeyValue(_) => {}
@@ -814,31 +810,36 @@ mod tests {
         value: String,
     }
 
-    fn assert_buckets_equal(
-        parent: String,
-        actual_buckets: &[crate::db::Bucket],
-        expect_buckets: &[Bucket],
-    ) {
-        assert_eq!(
-            actual_buckets.len(),
-            expect_buckets.len(),
-            "different child buckets num under: {}",
-            parent
-        );
+    fn assert_buckets_equal<T>(depth: u64, parent: String, iter: &mut T, expect_buckets: &[Bucket])
+    where
+        T: Iterator<Item = super::Bucket>,
+    {
+        for (i, expect) in expect_buckets.iter().enumerate() {
+            match iter.next() {
+                None => {
+                    panic!("want bucket at {} but got nothing under: {}", i, parent);
+                }
+                Some(actual) => {
+                    assert_eq!(
+                        actual.name,
+                        expect.name.clone().into_bytes(),
+                        "different child bucket name under: {}",
+                        parent
+                    );
+                    assert_eq!(
+                        depth, actual.depth,
+                        "different child bucket depth under: {}",
+                        parent,
+                    );
 
-        for (actual, expect) in actual_buckets.iter().zip(expect_buckets.iter()) {
-            assert_eq!(
-                actual.name,
-                expect.name.clone().into_bytes(),
-                "different child bucket name under: {}",
-                parent
-            );
-            let actual_child_buckets = actual.iter_buckets().collect::<Vec<_>>();
-            assert_buckets_equal(
-                format!("{}/{}", parent, expect.name),
-                &actual_child_buckets,
-                &expect.buckets,
-            );
+                    assert_buckets_equal(
+                        depth + 1,
+                        format!("{}/{}", parent, expect.name),
+                        iter,
+                        &expect.buckets,
+                    );
+                }
+            }
         }
     }
 
@@ -862,13 +863,13 @@ mod tests {
                 .build(),
         )
         .expect("open db successfully");
-        let actual_buckets = DB::iter_buckets(db.clone()).collect::<Vec<_>>();
+        let mut iter = DB::iter_buckets(db.clone());
 
         let content =
             fs::read_to_string(format!("{}/testdata/data.json", root_dir.to_str().unwrap()))
                 .expect("Unable to read file");
         let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
 
-        assert_buckets_equal(String::from(""), &actual_buckets, &expect_buckets);
+        assert_buckets_equal(0, String::from(""), &mut iter, &expect_buckets);
     }
 }

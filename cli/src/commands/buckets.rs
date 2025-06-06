@@ -26,6 +26,7 @@ use cling::prelude::*;
 use comfy_table::presets::NOTHING;
 use comfy_table::Table;
 use std::cell::RefCell;
+use std::iter::Peekable;
 use std::rc::Rc;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -51,36 +52,83 @@ struct Bucket {
     name: Vec<u8>,
     page_id: u64,
     is_inline: bool,
+    depth: u64,
     child_buckets: Vec<Bucket>,
 }
 
-fn iter_buckets_inner(bucket: &ancla::Bucket) -> Vec<Bucket> {
+fn iter_buckets_inner<T>(peek_iter: &mut Peekable<T>, depth: u64) -> Vec<Bucket>
+where
+    T: Iterator<Item = ancla::Bucket>,
+{
     let mut buckets: Vec<Bucket> = Vec::new();
-
-    let child_buckets: Vec<ancla::Bucket> = bucket.iter_buckets().collect();
-    for child_bucket in child_buckets {
-        buckets.push(Bucket {
-            name: child_bucket.name.clone(),
-            page_id: child_bucket.page_id,
-            is_inline: child_bucket.is_inline,
-            child_buckets: iter_buckets_inner(&child_bucket),
-        })
+    loop {
+        let item = peek_iter.peek().cloned();
+        match item {
+            None => {
+                break;
+            }
+            Some(bucket) => match bucket.depth.cmp(&depth) {
+                std::cmp::Ordering::Less => {
+                    break;
+                }
+                std::cmp::Ordering::Equal => {
+                    peek_iter.next();
+                    buckets.push(Bucket {
+                        name: bucket.name.clone(),
+                        page_id: bucket.page_id,
+                        is_inline: bucket.is_inline,
+                        depth: bucket.depth,
+                        child_buckets: iter_buckets_inner(peek_iter, depth + 1),
+                    });
+                }
+                std::cmp::Ordering::Greater => {
+                    panic!(
+                        "unexpect depth {} at bucket {}, parent depth is {}",
+                        bucket.depth,
+                        String::from_utf8(bucket.name.clone()).unwrap(),
+                        depth,
+                    )
+                }
+            },
+        }
     }
 
     buckets
 }
 
 fn iter_buckets(db: Rc<RefCell<ancla::DB>>) -> Vec<Bucket> {
-    let buckets: Vec<ancla::Bucket> = ancla::DB::iter_buckets(db).collect();
+    let mut buckets = Vec::<Bucket>::new();
+    let mut peek_iter = ancla::DB::iter_buckets(db).peekable();
+
+    loop {
+        let item = peek_iter.next();
+        if item.is_none() {
+            break;
+        }
+
+        match item {
+            None => break,
+            Some(bucket) => {
+                if bucket.depth != 0 {
+                    panic!(
+                        "unexpect depth {} at bucket {}, it must be 0",
+                        bucket.depth,
+                        String::from_utf8(bucket.name.clone()).unwrap()
+                    )
+                }
+
+                buckets.push(Bucket {
+                    name: bucket.name.clone(),
+                    page_id: bucket.page_id,
+                    is_inline: bucket.is_inline,
+                    depth: bucket.depth,
+                    child_buckets: iter_buckets_inner(&mut peek_iter, 1),
+                });
+            }
+        }
+    }
+
     buckets
-        .iter()
-        .map(|bucket| Bucket {
-            name: bucket.name.clone(),
-            page_id: bucket.page_id,
-            is_inline: bucket.is_inline,
-            child_buckets: iter_buckets_inner(bucket),
-        })
-        .collect()
 }
 
 fn print_buckets_inner(buckets: &[Bucket], table: &mut comfy_table::Table, level: usize) {
@@ -94,6 +142,7 @@ fn print_buckets_inner(buckets: &[Bucket], table: &mut comfy_table::Table, level
             ),
             bucket.page_id.to_string(),
             bucket.is_inline.to_string(),
+            bucket.depth.to_string(),
         ]);
         print_buckets_inner(&bucket.child_buckets, table, level + 1);
     }
@@ -104,13 +153,14 @@ fn print_buckets(buckets: &Vec<Bucket>) {
     buckets_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
     buckets_table.load_preset(NOTHING);
     buckets_table.enforce_styling();
-    buckets_table.set_header(vec!["BUCKET-NAME", "PAGE-ID", "IS-INLINE"]);
+    buckets_table.set_header(vec!["BUCKET-NAME", "PAGE-ID", "IS-INLINE", "DEPTH"]);
 
     for bucket in buckets {
         buckets_table.add_row(vec![
             String::from_utf8(bucket.name.clone()).unwrap(),
             bucket.page_id.to_string(),
             bucket.is_inline.to_string(),
+            bucket.depth.to_string(),
         ]);
 
         print_buckets_inner(&bucket.child_buckets, &mut buckets_table, 1);
