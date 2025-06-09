@@ -790,24 +790,31 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug, Clone)]
     #[serde(deny_unknown_fields)]
     struct Bucket {
         #[serde(rename = "Name")]
         name: String,
-        #[serde(rename = "Buckets")]
-        #[serde(default)]
-        buckets: Vec<Bucket>,
         #[serde(rename = "Items")]
         #[serde(default)]
         items: Vec<Item>,
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
-    #[serde(rename_all = "PascalCase")]
-    struct Item {
-        key: String,
-        value: String,
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    #[serde(rename_all = "PascalCase", tag = "Type")]
+    enum Item {
+        #[serde(rename = "kv")]
+        KV {
+            #[serde(rename = "Key")]
+            key: String,
+            #[serde(rename = "Value")]
+            value: String,
+        },
+        #[serde(rename = "bucket")]
+        Bucket {
+            #[serde(rename = "Bucket")]
+            bucket: Bucket,
+        },
     }
 
     fn assert_buckets_equal<T>(depth: u64, parent: String, iter: &mut T, expect_buckets: &[Bucket])
@@ -832,11 +839,22 @@ mod tests {
                         parent,
                     );
 
+                    #[allow(clippy::manual_filter_map)]
+                    let expect_child_buckets: Vec<_> = expect
+                        .clone()
+                        .items
+                        .into_iter()
+                        .filter(|item| matches!(item, Item::Bucket { .. }))
+                        .map(|item| match item {
+                            Item::Bucket { bucket: v } => v,
+                            _ => unreachable!(),
+                        })
+                        .collect();
                     assert_buckets_equal(
                         depth + 1,
                         format!("{}/{}", parent, expect.name),
                         iter,
-                        &expect.buckets,
+                        expect_child_buckets.as_slice(),
                     );
                 }
             }
