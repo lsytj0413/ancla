@@ -98,44 +98,30 @@ pub enum PageType {
 
 #[derive(Debug, Clone)]
 struct BranchElement {
-    #[allow(dead_code)]
     key: Vec<u8>,
     pgid: u64,
 }
 
 #[derive(Debug, Clone)]
 enum LeafElement {
-    Bucket {
-        name: Vec<u8>,
-        pgid: u64,
-    },
-    #[allow(dead_code)]
-    InlineBucket {
-        name: Vec<u8>,
-        items: Vec<KeyValue>,
-    },
+    Bucket { name: Vec<u8>, pgid: u64 },
+    InlineBucket { name: Vec<u8>, items: Vec<KeyValue> },
     KeyValue(KeyValue),
 }
 
 #[derive(Debug, Clone)]
 pub struct KeyValue {
-    #[allow(dead_code)]
     pub key: Vec<u8>,
-    #[allow(dead_code)]
     pub value: Vec<u8>,
 }
 
 #[derive(Clone)]
 pub enum DbItem {
-    #[allow(dead_code)]
     KeyValue(KeyValue),
-    #[allow(dead_code)]
     InlineBucket(Vec<u8>),
-    #[allow(dead_code)]
     Bucket(Bucket),
 }
 
-#[allow(dead_code)]
 struct DbItemIterator {
     db: Rc<RefCell<DB>>,
     stack: Vec<IterItem>,
@@ -151,30 +137,57 @@ impl Iterator for DbItemIterator {
             }
 
             let item = self.stack.index_mut(self.stack.len() - 1);
-            let data = self.db.borrow_mut().read_page(item.page_id.into());
+            let data = match item.node {
+                ItemNode::Page(page_id) => self.db.borrow_mut().read_page(page_id.into()),
+                ItemNode::Elements(ref kvs) => {
+                    if item.index < kvs.len() {
+                        item.index += 1;
+                        return Some(DbItem::KeyValue(kvs[item.index - 1].clone()));
+                    }
+
+                    self.stack.pop();
+                    continue;
+                }
+            };
+            let parent_bucket = item.parent_bucket.clone();
+
             match data.elem.as_ref().expect("must be leaf or branch") {
                 Element::Leaf(leaf_elements) => {
+                    let depth = item.depth.map(|depth| depth + 1).unwrap_or(0);
                     if item.index < leaf_elements.len() {
                         let elem = leaf_elements[item.index].clone();
                         item.index += 1;
                         match elem {
                             LeafElement::Bucket { name, pgid } => {
                                 self.stack.push(IterItem {
-                                    page_id: From::from(pgid),
+                                    node: ItemNode::Page(From::from(pgid)),
                                     index: 0,
                                     depth: None,
                                     parent_bucket: None,
                                 });
 
                                 return Some(DbItem::Bucket(Bucket {
-                                    parent_bucket: Vec::new(),
+                                    parent_bucket: parent_bucket
+                                        .as_ref()
+                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: false,
                                     page_id: pgid,
                                     name,
-                                    depth: 0,
+                                    depth,
                                 }));
                             }
-                            LeafElement::InlineBucket { name, .. } => {
+                            LeafElement::InlineBucket { name, items } => {
+                                println!(
+                                    "found inline bucket {}, items count {}",
+                                    String::from_utf8(name.clone()).unwrap(),
+                                    items.len()
+                                );
+                                self.stack.push(IterItem {
+                                    parent_bucket,
+                                    node: ItemNode::Elements(items),
+                                    index: 0,
+                                    depth: Some(depth),
+                                });
                                 return Some(DbItem::InlineBucket(name));
                             }
                             LeafElement::KeyValue(kv) => {
@@ -190,7 +203,7 @@ impl Iterator for DbItemIterator {
                         let elem = branch_elements[item.index].clone();
                         item.index += 1;
                         self.stack.push(IterItem {
-                            page_id: From::from(elem.pgid),
+                            node: ItemNode::Page(From::from(elem.pgid)),
                             index: 0,
                             depth: None,
                             parent_bucket: None,
@@ -291,9 +304,11 @@ impl DB {
                 .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
                 .unwrap();
             if leaf_element.flags == 0x01 {
+                // the value is bucketHeaderSize, same as root + sequence
                 let bucket_page_id = self.read_page_u64(value, 0);
                 if bucket_page_id == 0 {
-                    let page_leaf_elements = self.read_page_leaf_elements(value);
+                    // It's a inline bucket, skip bucketHeaderSize, it's root + sequence
+                    let page_leaf_elements = self.read_page_leaf_elements(value.get(16..).unwrap());
                     leaf_elements.push(LeafElement::InlineBucket {
                         name: key.to_vec(),
                         items: page_leaf_elements
@@ -430,13 +445,12 @@ impl DB {
     }
 
     pub fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
-        #[allow(unused_variables)]
         let meta = db.borrow_mut().get_meta();
 
         DbItemIterator {
             db: db.clone(),
             stack: vec![IterItem {
-                page_id: meta.root_pgid,
+                node: ItemNode::Page(meta.root_pgid),
                 index: 0,
                 depth: None,
                 parent_bucket: None,
@@ -450,7 +464,7 @@ impl DB {
         BucketIterator {
             db: db.clone(),
             stack: vec![IterItem {
-                page_id: meta.root_pgid,
+                node: ItemNode::Page(meta.root_pgid),
                 index: 0,
                 depth: None,
                 parent_bucket: None,
@@ -683,9 +697,14 @@ struct BucketIterator {
 
 struct IterItem {
     parent_bucket: Option<Bucket>,
-    page_id: bolt::Pgid,
+    node: ItemNode,
     index: usize,
     depth: Option<u64>,
+}
+
+enum ItemNode {
+    Page(bolt::Pgid),
+    Elements(Vec<KeyValue>),
 }
 
 impl Iterator for BucketIterator {
@@ -698,7 +717,10 @@ impl Iterator for BucketIterator {
             }
 
             let item = self.stack.index_mut(self.stack.len() - 1);
-            let data = self.db.borrow_mut().read_page(item.page_id.into());
+            let data = match item.node {
+                ItemNode::Page(page_id) => self.db.borrow_mut().read_page(page_id.into()),
+                ItemNode::Elements(_) => panic!(""),
+            };
             let parent_bucket = item.parent_bucket.clone();
 
             match data.elem.as_ref().expect("must be leaf or branch") {
@@ -708,7 +730,7 @@ impl Iterator for BucketIterator {
                         item.index += 1;
                         let depth = item.depth;
                         self.stack.push(IterItem {
-                            page_id: From::from(elem.pgid),
+                            node: ItemNode::Page(From::from(elem.pgid)),
                             index: 0,
                             depth,
                             parent_bucket,
@@ -726,7 +748,7 @@ impl Iterator for BucketIterator {
                         match elem {
                             LeafElement::Bucket { name, pgid } => {
                                 self.stack.push(IterItem {
-                                    page_id: From::from(pgid),
+                                    node: ItemNode::Page(From::from(pgid)),
                                     index: 0,
                                     depth: Some(depth),
                                     parent_bucket: parent_bucket.clone(),
@@ -817,7 +839,7 @@ mod tests {
         },
     }
 
-    fn assert_buckets_equal<T>(depth: u64, parent: String, iter: &mut T, expect_buckets: &[Bucket])
+    fn assert_buckets_equal<T>(depth: u64, parent: &String, iter: &mut T, expect_buckets: &[Bucket])
     where
         T: Iterator<Item = super::Bucket>,
     {
@@ -828,8 +850,8 @@ mod tests {
                 }
                 Some(actual) => {
                     assert_eq!(
-                        actual.name,
-                        expect.name.clone().into_bytes(),
+                        String::from_utf8(actual.name).unwrap(),
+                        expect.name,
                         "different child bucket name under: {}",
                         parent
                     );
@@ -852,7 +874,7 @@ mod tests {
                         .collect();
                     assert_buckets_equal(
                         depth + 1,
-                        format!("{}/{}", parent, expect.name),
+                        &format!("{}/{}", parent, expect.name),
                         iter,
                         expect_child_buckets.as_slice(),
                     );
@@ -888,6 +910,164 @@ mod tests {
                 .expect("Unable to read file");
         let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
 
-        assert_buckets_equal(0, String::from(""), &mut iter, &expect_buckets);
+        assert_buckets_equal(0, &String::from(""), &mut iter, &expect_buckets);
+    }
+
+    fn assert_child_items_equal<T>(
+        _depth: u64,
+        parent: &String,
+        iter: &mut T,
+        expect_items: &[Item],
+    ) where
+        T: Iterator<Item = super::DbItem>,
+    {
+        for (i, expect) in expect_items.iter().enumerate() {
+            let n = iter.next();
+            if n.is_none() {
+                panic!("want item at {} but got nothing under: {}", i, parent);
+            }
+            let n = n.unwrap();
+
+            match expect {
+                Item::KV { key, value } => match n {
+                    super::DbItem::KeyValue(kv) => {
+                        assert_eq!(
+                            String::from_utf8(kv.key.clone()).unwrap(),
+                            *key,
+                            "different key name under: {}",
+                            parent
+                        );
+                        assert_eq!(
+                            String::from_utf8(kv.value).unwrap(),
+                            *value,
+                            "different key's value name under: {}, key: {}",
+                            parent,
+                            key
+                        )
+                    }
+                    _ => {
+                        panic!("want kv item at {} but got another under: {}", i, parent);
+                    }
+                },
+                Item::Bucket { bucket } => match n {
+                    super::DbItem::Bucket(actual) => {
+                        assert_eq!(
+                            String::from_utf8(actual.name).unwrap(),
+                            bucket.name,
+                            "different child bucket name under: {}",
+                            parent
+                        );
+
+                        assert_child_items_equal(
+                            _depth + 1,
+                            &format!("{}/{}", parent, bucket.name),
+                            iter,
+                            bucket.items.as_slice(),
+                        );
+                    }
+                    super::DbItem::InlineBucket(name) => {
+                        assert_eq!(
+                            String::from_utf8(name).unwrap(),
+                            bucket.name,
+                            "different child bucket name under: {}",
+                            parent
+                        );
+
+                        assert_child_items_equal(
+                            _depth + 1,
+                            &format!("{}/{}", parent, bucket.name),
+                            iter,
+                            bucket.items.as_slice(),
+                        );
+                    }
+                    _ => {
+                        panic!(
+                            "want bucket item at {} but got another under: {}",
+                            i, parent
+                        );
+                    }
+                },
+            }
+        }
+    }
+
+    fn assert_items_equal<T>(depth: u64, parent: &String, iter: &mut T, expect_buckets: &[Bucket])
+    where
+        T: Iterator<Item = super::DbItem>,
+    {
+        for (i, expect) in expect_buckets.iter().enumerate() {
+            match iter.next() {
+                None => {
+                    panic!("want item at {} but got nothing under: {}", i, parent);
+                }
+                Some(DbItem::Bucket(actual)) => {
+                    assert_eq!(
+                        String::from_utf8(actual.name).unwrap(),
+                        expect.name,
+                        "different child bucket name under: {}",
+                        parent
+                    );
+                    assert_eq!(
+                        depth, actual.depth,
+                        "different child bucket depth under: {}",
+                        parent,
+                    );
+
+                    assert_child_items_equal(
+                        depth + 1,
+                        &format!("{}/{}", parent, expect.name),
+                        iter,
+                        expect.items.as_slice(),
+                    );
+                }
+                Some(DbItem::InlineBucket(ref name)) => {
+                    assert_eq!(
+                        String::from_utf8(name.clone()).unwrap(),
+                        expect.name,
+                        "different child bucket name under: {}",
+                        parent
+                    );
+                    assert_child_items_equal(
+                        depth + 1,
+                        &format!("{}/{}", parent, expect.name),
+                        iter,
+                        expect.items.as_slice(),
+                    );
+                }
+                Some(DbItem::KeyValue(_)) => {
+                    panic!("want bucket item at {} but got kvs: {}", i, parent);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_iter_items() {
+        let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let db = DB::open(
+            AnclaOptions::builder()
+                .db_path(
+                    root_dir
+                        .join("testdata")
+                        .join("data.db")
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                )
+                .build(),
+        )
+        .expect("open db successfully");
+        let mut iter = DB::iter_items(db.clone());
+
+        let content =
+            fs::read_to_string(format!("{}/testdata/data.json", root_dir.to_str().unwrap()))
+                .expect("Unable to read file");
+        let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
+
+        assert_items_equal(0, &String::from(""), &mut iter, &expect_buckets);
     }
 }
