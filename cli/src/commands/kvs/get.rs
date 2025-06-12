@@ -43,9 +43,9 @@ pub fn run_get(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::open(options)?;
+    let db = ancla::DBWrapper::open(options)?;
 
-    let kv = ancla::DB::get_key_value(db, &args.buckets, &args.key);
+    let kv = db.get_key_value(&args.buckets, &args.key);
     if let Some(kv) = kv {
         println!("Key: {:?}", String::from_utf8(kv.key));
         println!("Value: {:?}", String::from_utf8(kv.value));

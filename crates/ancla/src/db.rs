@@ -23,10 +23,8 @@
 use crate::bolt::{self, PAGE_HEADER_SIZE};
 use crate::errors::DatabaseError;
 use fnv_rs::{Fnv64, FnvHasher};
-use std::cell::RefCell;
 use std::ops::IndexMut;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -34,6 +32,104 @@ use std::{
 };
 
 use typed_builder::TypedBuilder;
+
+#[derive(Clone)]
+pub struct DBWrapper {
+    inner: Arc<Mutex<DB>>,
+}
+
+impl DBWrapper {
+    pub fn open(ancla_options: AnclaOptions) -> Result<Self, DatabaseError> {
+        let file = File::open(ancla_options.db_path.clone()).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => DatabaseError::FileNotFound(ancla_options.db_path.clone()),
+            _ => DatabaseError::IOError(ancla_options.db_path.clone(), e.to_string()),
+        })?;
+
+        let mut db = DB {
+            file,
+            page_datas: BTreeMap::new(),
+            meta0: None,
+            meta1: None,
+        };
+        db.initialize()?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db)),
+        })
+    }
+
+    pub fn iter_buckets(&self) -> impl Iterator<Item = Bucket> {
+        let meta = self.inner.lock().unwrap().get_meta();
+        BucketIterator {
+            db: self.clone(),
+            stack: vec![IterItem {
+                node: ItemNode::Page(meta.root_pgid),
+                index: 0,
+                depth: None,
+                parent_bucket: None,
+            }],
+        }
+    }
+
+    pub fn iter_items(&self) -> impl Iterator<Item = DbItem> {
+        let meta = self.inner.lock().unwrap().get_meta();
+
+        DbItemIterator {
+            db: self.clone(),
+            stack: vec![IterItem {
+                node: ItemNode::Page(meta.root_pgid),
+                index: 0,
+                depth: None,
+                parent_bucket: None,
+            }],
+        }
+    }
+
+    pub fn iter_pages(&self) -> impl Iterator<Item = PageInfo> {
+        let meta = self.inner.lock().unwrap().get_meta();
+
+        PageIterator {
+            db: self.clone(),
+            stack: vec![
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: 0,
+                    typ: PageType::Meta,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: 1,
+                    typ: PageType::Meta,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: meta.freelist_pgid.into(),
+                    typ: PageType::Freelist,
+                },
+                PageIterItem {
+                    parent_page_id: None,
+                    page_id: meta.root_pgid.into(),
+                    typ: PageType::DataBranch,
+                },
+            ],
+        }
+    }
+
+    pub fn info(&self) -> Info {
+        let meta = self.inner.lock().unwrap().get_meta();
+
+        Info {
+            page_size: meta.page_size,
+        }
+    }
+
+    pub fn get_key_value(&self, buckets: &[String], key: &String) -> Option<KeyValue> {
+        let meta = self.inner.lock().unwrap().get_meta();
+        self.inner
+            .lock()
+            .unwrap()
+            .get_key_value_inner(buckets, key, meta.root_pgid.into())
+    }
+}
 
 pub struct DB {
     file: File,
@@ -123,7 +219,7 @@ pub enum DbItem {
 }
 
 struct DbItemIterator {
-    db: Rc<RefCell<DB>>,
+    db: DBWrapper,
     stack: Vec<IterItem>,
 }
 
@@ -138,7 +234,7 @@ impl Iterator for DbItemIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = match item.node {
-                ItemNode::Page(page_id) => self.db.borrow_mut().read_page(page_id.into()),
+                ItemNode::Page(page_id) => self.db.inner.lock().unwrap().read_page(page_id.into()),
                 ItemNode::Elements(ref kvs) => {
                     if item.index < kvs.len() {
                         item.index += 1;
@@ -177,11 +273,6 @@ impl Iterator for DbItemIterator {
                                 }));
                             }
                             LeafElement::InlineBucket { name, items } => {
-                                println!(
-                                    "found inline bucket {}, items count {}",
-                                    String::from_utf8(name.clone()).unwrap(),
-                                    items.len()
-                                );
                                 self.stack.push(IterItem {
                                     parent_bucket,
                                     node: ItemNode::Elements(items),
@@ -427,99 +518,6 @@ impl DB {
         freelist
     }
 
-    pub fn open(ancla_options: AnclaOptions) -> Result<Rc<RefCell<DB>>, DatabaseError> {
-        let file = File::open(ancla_options.db_path.clone()).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => DatabaseError::FileNotFound(ancla_options.db_path.clone()),
-            _ => DatabaseError::IOError(ancla_options.db_path.clone(), e.to_string()),
-        })?;
-
-        let db = Rc::new(RefCell::new(DB {
-            file,
-            page_datas: BTreeMap::new(),
-            meta0: None,
-            meta1: None,
-        }));
-
-        db.borrow_mut().initialize()?;
-        Ok(db)
-    }
-
-    pub fn iter_items(db: Rc<RefCell<DB>>) -> impl Iterator<Item = DbItem> {
-        let meta = db.borrow_mut().get_meta();
-
-        DbItemIterator {
-            db: db.clone(),
-            stack: vec![IterItem {
-                node: ItemNode::Page(meta.root_pgid),
-                index: 0,
-                depth: None,
-                parent_bucket: None,
-            }],
-        }
-    }
-
-    pub fn iter_buckets(db: Rc<RefCell<DB>>) -> impl Iterator<Item = Bucket> {
-        let meta = db.borrow_mut().get_meta();
-
-        BucketIterator {
-            db: db.clone(),
-            stack: vec![IterItem {
-                node: ItemNode::Page(meta.root_pgid),
-                index: 0,
-                depth: None,
-                parent_bucket: None,
-            }],
-        }
-    }
-
-    pub fn iter_pages(db: Rc<RefCell<DB>>) -> impl Iterator<Item = PageInfo> {
-        let meta = db.borrow_mut().get_meta();
-
-        PageIterator {
-            db: db.clone(),
-            stack: vec![
-                PageIterItem {
-                    parent_page_id: None,
-                    page_id: 0,
-                    typ: PageType::Meta,
-                },
-                PageIterItem {
-                    parent_page_id: None,
-                    page_id: 1,
-                    typ: PageType::Meta,
-                },
-                PageIterItem {
-                    parent_page_id: None,
-                    page_id: meta.freelist_pgid.into(),
-                    typ: PageType::Freelist,
-                },
-                PageIterItem {
-                    parent_page_id: None,
-                    page_id: meta.root_pgid.into(),
-                    typ: PageType::DataBranch,
-                },
-            ],
-        }
-    }
-
-    pub fn info(db: Rc<RefCell<DB>>) -> Info {
-        let meta = db.borrow_mut().get_meta();
-
-        Info {
-            page_size: meta.page_size,
-        }
-    }
-
-    pub fn get_key_value(
-        db: Rc<RefCell<DB>>,
-        buckets: &[String],
-        key: &String,
-    ) -> Option<KeyValue> {
-        let meta = db.borrow_mut().get_meta();
-        db.borrow_mut()
-            .get_key_value_inner(buckets, key, meta.root_pgid.into())
-    }
-
     fn get_key_value_inner(
         &mut self,
         buckets: &[String],
@@ -578,7 +576,7 @@ pub struct Info {
 }
 
 struct PageIterator {
-    db: Rc<RefCell<DB>>,
+    db: DBWrapper,
     stack: Vec<PageIterItem>,
 }
 
@@ -608,7 +606,7 @@ impl Iterator for PageIterator {
             });
         }
 
-        let data = self.db.borrow_mut().read_page(item.page_id);
+        let data = self.db.inner.lock().unwrap().read_page(item.page_id);
         if data.typ == PageType::Meta {
             return Some(PageInfo {
                 id: data.id,
@@ -620,7 +618,12 @@ impl Iterator for PageIterator {
             });
         } else if data.typ == PageType::Freelist {
             let page: bolt::Page = TryFrom::try_from(data.data.as_slice()).unwrap();
-            let freelist = self.db.borrow_mut().read_freelist(&data.data, page.count);
+            let freelist = self
+                .db
+                .inner
+                .lock()
+                .unwrap()
+                .read_freelist(&data.data, page.count);
             for &i in &freelist {
                 // See
                 // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
@@ -691,7 +694,7 @@ impl Iterator for PageIterator {
 }
 
 struct BucketIterator {
-    db: Rc<RefCell<DB>>,
+    db: DBWrapper,
     stack: Vec<IterItem>,
 }
 
@@ -718,7 +721,7 @@ impl Iterator for BucketIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = match item.node {
-                ItemNode::Page(page_id) => self.db.borrow_mut().read_page(page_id.into()),
+                ItemNode::Page(page_id) => self.db.inner.lock().unwrap().read_page(page_id.into()),
                 ItemNode::Elements(_) => panic!(""),
             };
             let parent_bucket = item.parent_bucket.clone();
@@ -890,7 +893,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DB::open(
+        let db = DBWrapper::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -903,7 +906,7 @@ mod tests {
                 .build(),
         )
         .expect("open db successfully");
-        let mut iter = DB::iter_buckets(db.clone());
+        let mut iter = db.iter_buckets();
 
         let content =
             fs::read_to_string(format!("{}/testdata/data.json", root_dir.to_str().unwrap()))
@@ -1048,7 +1051,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DB::open(
+        let db = DBWrapper::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -1061,7 +1064,7 @@ mod tests {
                 .build(),
         )
         .expect("open db successfully");
-        let mut iter = DB::iter_items(db.clone());
+        let mut iter = db.iter_items();
 
         let content =
             fs::read_to_string(format!("{}/testdata/data.json", root_dir.to_str().unwrap()))
@@ -1069,5 +1072,49 @@ mod tests {
         let expect_buckets: Vec<Bucket> = serde_json::from_str(&content).unwrap();
 
         assert_items_equal(0, &String::from(""), &mut iter, &expect_buckets);
+    }
+
+    #[test]
+    fn test_multi_thread() {
+        let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let db = DBWrapper::open(
+            AnclaOptions::builder()
+                .db_path(
+                    root_dir
+                        .join("testdata")
+                        .join("data.db")
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                )
+                .build(),
+        )
+        .expect("open db successfully");
+
+        let mut handles = vec![];
+        let result = Arc::new(Mutex::new(vec![0, 0, 0]));
+        for thread_id in 0..3 {
+            let db_clone = db.clone();
+            let result_clone = result.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut result = result_clone.lock().unwrap();
+                if thread_id == 0 {
+                    result[0] = db_clone.iter_pages().count();
+                } else if thread_id == 1 {
+                    result[1] = db_clone.iter_buckets().count();
+                } else {
+                    result[2] = db_clone.iter_items().count();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(result.lock().unwrap().as_slice(), vec![80, 396, 1385]);
     }
 }

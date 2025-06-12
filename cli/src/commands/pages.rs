@@ -38,9 +38,9 @@ pub fn run_pages(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::open(options)?;
+    let db = ancla::DBWrapper::open(options)?;
 
-    let mut pages: Vec<ancla::PageInfo> = ancla::DB::iter_pages(db).collect();
+    let mut pages: Vec<ancla::PageInfo> = db.iter_pages().collect();
     pages.sort();
     let mut pages_table = Table::new();
     pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);

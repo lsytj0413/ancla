@@ -25,9 +25,7 @@ use clap::Parser;
 use cling::prelude::*;
 use comfy_table::presets::NOTHING;
 use comfy_table::Table;
-use std::cell::RefCell;
 use std::iter::Peekable;
-use std::rc::Rc;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_buckets")]
@@ -41,7 +39,7 @@ pub fn run_buckets(
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
         .build();
-    let db = ancla::DB::open(options)?;
+    let db = ancla::DBWrapper::open(options)?;
     let buckets = iter_buckets(db);
     print_buckets(&buckets);
 
@@ -96,9 +94,9 @@ where
     buckets
 }
 
-fn iter_buckets(db: Rc<RefCell<ancla::DB>>) -> Vec<Bucket> {
+fn iter_buckets(db: ancla::DBWrapper) -> Vec<Bucket> {
     let mut buckets = Vec::<Bucket>::new();
-    let mut peek_iter = ancla::DB::iter_buckets(db).peekable();
+    let mut peek_iter = db.iter_buckets().peekable();
 
     loop {
         let item = peek_iter.next();
