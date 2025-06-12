@@ -25,4 +25,4 @@ mod db;
 mod errors;
 mod utils;
 
-pub use db::{AnclaOptions, Bucket, DbItem, Info, KeyValue, PageInfo, DB};
+pub use db::{AnclaOptions, Bucket, DBWrapper, DbItem, Info, KeyValue, PageInfo};
