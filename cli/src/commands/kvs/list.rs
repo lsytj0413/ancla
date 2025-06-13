@@ -51,8 +51,8 @@ pub fn run_list(
             ancla::DbItem::Bucket(bucket) => {
                 println!("Bucket: {:?}", String::from_utf8(bucket.name));
             }
-            ancla::DbItem::InlineBucket(name) => {
-                println!("InlineBucket: {:?}", String::from_utf8(name));
+            ancla::DbItem::InlineBucket(bucket) => {
+                println!("InlineBucket: {:?}", String::from_utf8(bucket.name));
             }
         }
     }

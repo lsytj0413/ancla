@@ -58,15 +58,8 @@ impl DBWrapper {
     }
 
     pub fn iter_buckets(&self) -> impl Iterator<Item = Bucket> {
-        let meta = self.inner.lock().unwrap().get_meta();
         BucketIterator {
-            db: self.clone(),
-            stack: vec![IterItem {
-                node: ItemNode::Page(meta.root_pgid),
-                index: 0,
-                depth: None,
-                parent_bucket: None,
-            }],
+            iter: self.iter_items(),
         }
     }
 
@@ -200,8 +193,15 @@ struct BranchElement {
 
 #[derive(Debug, Clone)]
 enum LeafElement {
-    Bucket { name: Vec<u8>, pgid: u64 },
-    InlineBucket { name: Vec<u8>, items: Vec<KeyValue> },
+    Bucket {
+        name: Vec<u8>,
+        pgid: u64,
+    },
+    InlineBucket {
+        name: Vec<u8>,
+        pgid: u64,
+        items: Vec<KeyValue>,
+    },
     KeyValue(KeyValue),
 }
 
@@ -214,7 +214,7 @@ pub struct KeyValue {
 #[derive(Clone)]
 pub enum DbItem {
     KeyValue(KeyValue),
-    InlineBucket(Vec<u8>),
+    InlineBucket(Bucket),
     Bucket(Bucket),
 }
 
@@ -258,12 +258,13 @@ impl Iterator for DbItemIterator {
                                 self.stack.push(IterItem {
                                     node: ItemNode::Page(From::from(pgid)),
                                     index: 0,
-                                    depth: None,
-                                    parent_bucket: None,
+                                    depth: Some(depth),
+                                    parent_bucket: parent_bucket.clone(),
                                 });
 
                                 return Some(DbItem::Bucket(Bucket {
                                     parent_bucket: parent_bucket
+                                        .clone()
                                         .as_ref()
                                         .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: false,
@@ -272,14 +273,23 @@ impl Iterator for DbItemIterator {
                                     depth,
                                 }));
                             }
-                            LeafElement::InlineBucket { name, items } => {
+                            LeafElement::InlineBucket { name, pgid, items } => {
                                 self.stack.push(IterItem {
-                                    parent_bucket,
+                                    parent_bucket: parent_bucket.clone(),
                                     node: ItemNode::Elements(items),
                                     index: 0,
                                     depth: Some(depth),
                                 });
-                                return Some(DbItem::InlineBucket(name));
+                                return Some(DbItem::InlineBucket(Bucket {
+                                    parent_bucket: parent_bucket
+                                        .clone()
+                                        .as_ref()
+                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                    is_inline: true,
+                                    page_id: pgid,
+                                    name,
+                                    depth,
+                                }));
                             }
                             LeafElement::KeyValue(kv) => {
                                 return Some(DbItem::KeyValue(kv));
@@ -293,11 +303,12 @@ impl Iterator for DbItemIterator {
                     if item.index < branch_elements.len() {
                         let elem = branch_elements[item.index].clone();
                         item.index += 1;
+                        let depth = item.depth;
                         self.stack.push(IterItem {
                             node: ItemNode::Page(From::from(elem.pgid)),
                             index: 0,
-                            depth: None,
-                            parent_bucket: None,
+                            depth,
+                            parent_bucket: parent_bucket.clone(),
                         });
                         continue;
                     }
@@ -402,6 +413,7 @@ impl DB {
                     let page_leaf_elements = self.read_page_leaf_elements(value.get(16..).unwrap());
                     leaf_elements.push(LeafElement::InlineBucket {
                         name: key.to_vec(),
+                        pgid: bucket_page_id,
                         items: page_leaf_elements
                             .into_iter()
                             .map(|x| match x {
@@ -550,7 +562,7 @@ impl DB {
                                 return self.get_key_value_inner(&buckets[1..], key, *pgid);
                             }
                         }
-                        LeafElement::InlineBucket { name, items } => {
+                        LeafElement::InlineBucket { name, items, .. } => {
                             if buckets.len() != 1 {
                                 continue;
                             }
@@ -693,9 +705,8 @@ impl Iterator for PageIterator {
     }
 }
 
-struct BucketIterator {
-    db: DBWrapper,
-    stack: Vec<IterItem>,
+struct BucketIterator<T: Iterator<Item = DbItem>> {
+    iter: T,
 }
 
 struct IterItem {
@@ -710,80 +721,23 @@ enum ItemNode {
     Elements(Vec<KeyValue>),
 }
 
-impl Iterator for BucketIterator {
+impl<T> Iterator for BucketIterator<T>
+where
+    T: Iterator<Item = DbItem>,
+{
     type Item = Bucket;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.stack.is_empty() {
-                return None;
-            }
+            let item = self.iter.next();
 
-            let item = self.stack.index_mut(self.stack.len() - 1);
-            let data = match item.node {
-                ItemNode::Page(page_id) => self.db.inner.lock().unwrap().read_page(page_id.into()),
-                ItemNode::Elements(_) => panic!(""),
-            };
-            let parent_bucket = item.parent_bucket.clone();
-
-            match data.elem.as_ref().expect("must be leaf or branch") {
-                Element::Branch(branch_elements) => {
-                    if item.index < branch_elements.len() {
-                        let elem = branch_elements[item.index].clone();
-                        item.index += 1;
-                        let depth = item.depth;
-                        self.stack.push(IterItem {
-                            node: ItemNode::Page(From::from(elem.pgid)),
-                            index: 0,
-                            depth,
-                            parent_bucket,
-                        });
-                        continue;
-                    }
-
-                    self.stack.pop();
-                }
-                Element::Leaf(leaf_elements) => {
-                    if item.index < leaf_elements.len() {
-                        let elem = leaf_elements[item.index].clone();
-                        item.index += 1;
-                        let depth = item.depth.map(|depth| depth + 1).unwrap_or(0);
-                        match elem {
-                            LeafElement::Bucket { name, pgid } => {
-                                self.stack.push(IterItem {
-                                    node: ItemNode::Page(From::from(pgid)),
-                                    index: 0,
-                                    depth: Some(depth),
-                                    parent_bucket: parent_bucket.clone(),
-                                });
-                                return Some(Bucket {
-                                    parent_bucket: parent_bucket
-                                        .as_ref()
-                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
-                                    is_inline: false,
-                                    page_id: pgid,
-                                    name,
-                                    depth,
-                                });
-                            }
-                            LeafElement::InlineBucket { name, items: _ } => {
-                                return Some(Bucket {
-                                    parent_bucket: parent_bucket
-                                        .as_ref()
-                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
-                                    is_inline: true,
-                                    page_id: 0,
-                                    name,
-                                    depth: item.depth.map(|depth| depth + 1).unwrap_or(0),
-                                });
-                            }
-                            LeafElement::KeyValue(_) => {}
-                        }
-                        continue;
-                    }
-
-                    self.stack.pop();
-                }
+            match item {
+                None => return None,
+                Some(db_item) => match db_item {
+                    DbItem::InlineBucket(bucket) => return Some(bucket),
+                    DbItem::KeyValue(_) => continue,
+                    DbItem::Bucket(bucket) => return Some(bucket),
+                },
             }
         }
     }
@@ -968,9 +922,9 @@ mod tests {
                             bucket.items.as_slice(),
                         );
                     }
-                    super::DbItem::InlineBucket(name) => {
+                    super::DbItem::InlineBucket(actual) => {
                         assert_eq!(
-                            String::from_utf8(name).unwrap(),
+                            String::from_utf8(actual.name).unwrap(),
                             bucket.name,
                             "different child bucket name under: {}",
                             parent
@@ -1023,9 +977,9 @@ mod tests {
                         expect.items.as_slice(),
                     );
                 }
-                Some(DbItem::InlineBucket(ref name)) => {
+                Some(DbItem::InlineBucket(ref actual)) => {
                     assert_eq!(
-                        String::from_utf8(name.clone()).unwrap(),
+                        String::from_utf8(actual.name.clone()).unwrap(),
                         expect.name,
                         "different child bucket name under: {}",
                         parent
