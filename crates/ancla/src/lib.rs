@@ -26,3 +26,4 @@ mod errors;
 mod utils;
 
 pub use db::{AnclaOptions, Bucket, DBWrapper, DbItem, Info, KeyValue, PageInfo};
+pub use errors::DatabaseError;

@@ -41,19 +41,20 @@ pub fn run_list(
     let iter = db.iter_items();
     for item in iter {
         match item {
-            ancla::DbItem::KeyValue(kv) => {
+            Ok(ancla::DbItem::KeyValue(kv)) => {
                 println!(
                     "Key: {:?}, Value: {:?}",
                     String::from_utf8(kv.key),
                     String::from_utf8(kv.value)
                 );
             }
-            ancla::DbItem::Bucket(bucket) => {
+            Ok(ancla::DbItem::Bucket(bucket)) => {
                 println!("Bucket: {:?}", String::from_utf8(bucket.name));
             }
-            ancla::DbItem::InlineBucket(bucket) => {
+            Ok(ancla::DbItem::InlineBucket(bucket)) => {
                 println!("InlineBucket: {:?}", String::from_utf8(bucket.name));
             }
+            Err(e) => panic!("unexpect err {e}"),
         }
     }
 

@@ -57,13 +57,13 @@ impl DBWrapper {
         })
     }
 
-    pub fn iter_buckets(&self) -> impl Iterator<Item = Bucket> {
+    pub fn iter_buckets(&self) -> impl Iterator<Item = Result<Bucket, DatabaseError>> {
         BucketIterator {
             iter: self.iter_items(),
         }
     }
 
-    pub fn iter_items(&self) -> impl Iterator<Item = DbItem> {
+    pub fn iter_items(&self) -> impl Iterator<Item = Result<DbItem, DatabaseError>> {
         let meta = self.inner.lock().unwrap().get_meta();
 
         DbItemIterator {
@@ -224,7 +224,7 @@ struct DbItemIterator {
 }
 
 impl Iterator for DbItemIterator {
-    type Item = DbItem;
+    type Item = Result<DbItem, DatabaseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -238,7 +238,7 @@ impl Iterator for DbItemIterator {
                 ItemNode::Elements(ref kvs) => {
                     if item.index < kvs.len() {
                         item.index += 1;
-                        return Some(DbItem::KeyValue(kvs[item.index - 1].clone()));
+                        return Some(Ok(DbItem::KeyValue(kvs[item.index - 1].clone())));
                     }
 
                     self.stack.pop();
@@ -262,7 +262,7 @@ impl Iterator for DbItemIterator {
                                     parent_bucket: parent_bucket.clone(),
                                 });
 
-                                return Some(DbItem::Bucket(Bucket {
+                                return Some(Ok(DbItem::Bucket(Bucket {
                                     parent_bucket: parent_bucket
                                         .clone()
                                         .as_ref()
@@ -271,7 +271,7 @@ impl Iterator for DbItemIterator {
                                     page_id: pgid,
                                     name,
                                     depth,
-                                }));
+                                })));
                             }
                             LeafElement::InlineBucket { name, pgid, items } => {
                                 self.stack.push(IterItem {
@@ -280,7 +280,7 @@ impl Iterator for DbItemIterator {
                                     index: 0,
                                     depth: Some(depth),
                                 });
-                                return Some(DbItem::InlineBucket(Bucket {
+                                return Some(Ok(DbItem::InlineBucket(Bucket {
                                     parent_bucket: parent_bucket
                                         .clone()
                                         .as_ref()
@@ -289,10 +289,10 @@ impl Iterator for DbItemIterator {
                                     page_id: pgid,
                                     name,
                                     depth,
-                                }));
+                                })));
                             }
                             LeafElement::KeyValue(kv) => {
-                                return Some(DbItem::KeyValue(kv));
+                                return Some(Ok(DbItem::KeyValue(kv)));
                             }
                         }
                     }
@@ -705,7 +705,7 @@ impl Iterator for PageIterator {
     }
 }
 
-struct BucketIterator<T: Iterator<Item = DbItem>> {
+struct BucketIterator<T: Iterator<Item = Result<DbItem, DatabaseError>>> {
     iter: T,
 }
 
@@ -723,9 +723,9 @@ enum ItemNode {
 
 impl<T> Iterator for BucketIterator<T>
 where
-    T: Iterator<Item = DbItem>,
+    T: Iterator<Item = Result<DbItem, DatabaseError>>,
 {
-    type Item = Bucket;
+    type Item = Result<Bucket, DatabaseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -733,11 +733,12 @@ where
 
             match item {
                 None => return None,
-                Some(db_item) => match db_item {
-                    DbItem::InlineBucket(bucket) => return Some(bucket),
+                Some(Ok(db_item)) => match db_item {
+                    DbItem::InlineBucket(bucket) => return Some(Ok(bucket)),
                     DbItem::KeyValue(_) => continue,
-                    DbItem::Bucket(bucket) => return Some(bucket),
+                    DbItem::Bucket(bucket) => return Some(Ok(bucket)),
                 },
+                Some(Err(e)) => return Some(Err(e)),
             }
         }
     }
@@ -798,14 +799,14 @@ mod tests {
 
     fn assert_buckets_equal<T>(depth: u64, parent: &String, iter: &mut T, expect_buckets: &[Bucket])
     where
-        T: Iterator<Item = super::Bucket>,
+        T: Iterator<Item = Result<super::Bucket, DatabaseError>>,
     {
         for (i, expect) in expect_buckets.iter().enumerate() {
             match iter.next() {
                 None => {
                     panic!("want bucket at {} but got nothing under: {}", i, parent);
                 }
-                Some(actual) => {
+                Some(Ok(actual)) => {
                     assert_eq!(
                         String::from_utf8(actual.name).unwrap(),
                         expect.name,
@@ -836,6 +837,7 @@ mod tests {
                         expect_child_buckets.as_slice(),
                     );
                 }
+                Some(Err(e)) => panic!("want item at {} but got err {} under: {}", i, e, parent),
             }
         }
     }
@@ -876,7 +878,7 @@ mod tests {
         iter: &mut T,
         expect_items: &[Item],
     ) where
-        T: Iterator<Item = super::DbItem>,
+        T: Iterator<Item = Result<super::DbItem, DatabaseError>>,
     {
         for (i, expect) in expect_items.iter().enumerate() {
             let n = iter.next();
@@ -887,7 +889,7 @@ mod tests {
 
             match expect {
                 Item::KV { key, value } => match n {
-                    super::DbItem::KeyValue(kv) => {
+                    Ok(super::DbItem::KeyValue(kv)) => {
                         assert_eq!(
                             String::from_utf8(kv.key.clone()).unwrap(),
                             *key,
@@ -907,7 +909,7 @@ mod tests {
                     }
                 },
                 Item::Bucket { bucket } => match n {
-                    super::DbItem::Bucket(actual) => {
+                    Ok(super::DbItem::Bucket(actual)) => {
                         assert_eq!(
                             String::from_utf8(actual.name).unwrap(),
                             bucket.name,
@@ -922,7 +924,7 @@ mod tests {
                             bucket.items.as_slice(),
                         );
                     }
-                    super::DbItem::InlineBucket(actual) => {
+                    Ok(super::DbItem::InlineBucket(actual)) => {
                         assert_eq!(
                             String::from_utf8(actual.name).unwrap(),
                             bucket.name,
@@ -950,14 +952,14 @@ mod tests {
 
     fn assert_items_equal<T>(depth: u64, parent: &String, iter: &mut T, expect_buckets: &[Bucket])
     where
-        T: Iterator<Item = super::DbItem>,
+        T: Iterator<Item = Result<super::DbItem, DatabaseError>>,
     {
         for (i, expect) in expect_buckets.iter().enumerate() {
             match iter.next() {
                 None => {
                     panic!("want item at {} but got nothing under: {}", i, parent);
                 }
-                Some(DbItem::Bucket(actual)) => {
+                Some(Ok(DbItem::Bucket(actual))) => {
                     assert_eq!(
                         String::from_utf8(actual.name).unwrap(),
                         expect.name,
@@ -977,7 +979,7 @@ mod tests {
                         expect.items.as_slice(),
                     );
                 }
-                Some(DbItem::InlineBucket(ref actual)) => {
+                Some(Ok(DbItem::InlineBucket(ref actual))) => {
                     assert_eq!(
                         String::from_utf8(actual.name.clone()).unwrap(),
                         expect.name,
@@ -991,9 +993,10 @@ mod tests {
                         expect.items.as_slice(),
                     );
                 }
-                Some(DbItem::KeyValue(_)) => {
+                Some(Ok(DbItem::KeyValue(_))) => {
                     panic!("want bucket item at {} but got kvs: {}", i, parent);
                 }
+                Some(Err(e)) => panic!("want item at {} but got err {} under: {}", i, e, parent),
             }
         }
     }
