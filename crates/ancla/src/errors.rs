@@ -22,7 +22,7 @@
 
 use thiserror::Error;
 
-#[derive(Error, Debug, Eq, PartialEq)]
+#[derive(Error, Debug, Eq, PartialEq, Clone)]
 pub enum DatabaseError {
     #[error("data buffer is too small, expect {expect}, got {got}")]
     TooSmallData { expect: usize, got: usize },

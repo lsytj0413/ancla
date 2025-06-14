@@ -56,7 +56,7 @@ struct Bucket {
 
 fn iter_buckets_inner<T>(peek_iter: &mut Peekable<T>, depth: u64) -> Vec<Bucket>
 where
-    T: Iterator<Item = ancla::Bucket>,
+    T: Iterator<Item = Result<ancla::Bucket, ancla::DatabaseError>>,
 {
     let mut buckets: Vec<Bucket> = Vec::new();
     loop {
@@ -65,7 +65,7 @@ where
             None => {
                 break;
             }
-            Some(bucket) => match bucket.depth.cmp(&depth) {
+            Some(Ok(bucket)) => match bucket.depth.cmp(&depth) {
                 std::cmp::Ordering::Less => {
                     break;
                 }
@@ -88,6 +88,7 @@ where
                     )
                 }
             },
+            Some(Err(e)) => panic!("unexepct err {e}"),
         }
     }
 
@@ -106,7 +107,7 @@ fn iter_buckets(db: ancla::DBWrapper) -> Vec<Bucket> {
 
         match item {
             None => break,
-            Some(bucket) => {
+            Some(Ok(bucket)) => {
                 if bucket.depth != 0 {
                     panic!(
                         "unexpect depth {} at bucket {}, it must be 0",
@@ -123,6 +124,7 @@ fn iter_buckets(db: ancla::DBWrapper) -> Vec<Bucket> {
                     child_buckets: iter_buckets_inner(&mut peek_iter, 1),
                 });
             }
+            Some(Err(e)) => panic!("unexpect err {e}",),
         }
     }
 
