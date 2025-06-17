@@ -26,33 +26,39 @@ use crate::utils;
 use binrw::BinRead;
 use bitflags::bitflags;
 
+/// PageHeader is the bolt's page metadata definition, every page must have this definition
+/// at it's start (offset 0), it defines the type of page and how to parse it etc.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub(crate) struct Page {
-    // is the identifier of the page, it start from 0,
-    // and is incremented by 1 for each page.
-    // There have two special pages:
-    //   - 0: meta0
-    //   - 1: meta1
-    // The are the root page of database, and the meta (valid) which have bigger
-    // txid is current available.
+pub(crate) struct PageHeader {
+    /// id is the identifier of the page, it start from 0,
+    /// and is incremented by 1 for each page.
+    /// There have two special pages:
+    ///   - 0: meta0
+    ///   - 1: meta1
+    ///
+    /// The are the root page of database, and the meta (valid) which have bigger
+    /// txid is current available.
     pub(crate) id: Pgid,
-    // indicate which type this page is.
+
+    /// indicate which type this page is.
     #[cfg_attr(feature = "binrw", br(parse_with = pageflag_custom_parse))]
     pub(crate) flags: PageFlag,
-    // number of element in this page, if the page is freelist page:
-    // 1. if value < 0xFFFF, it's the number of pageid
-    // 2. if value is 0xFFFF, the next 8-bytes（page's offset 16） is the number of pageid.
+
+    /// number of element in this page, if the page is freelist page:
+    /// 1. when value < 0xFFFF, it's the number of pageid
+    /// 2. when value is 0xFFFF, the next 8-bytes（page's offset 16） is the number of pageid.
     pub(crate) count: u16,
-    // the continous number of page, all page's data is stored in the buffer which
-    // size is (1 + overflow) * PAGE_SIZE.
+
+    /// the continous number of page, all page's data is stored in the buffer which
+    /// size is (1 + overflow) * PAGE_SIZE.
     pub(crate) overflow: u32,
 }
 
-pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<Page>();
+pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<PageHeader>();
 
-impl Page {
+impl PageHeader {
     #[cfg(feature = "binrw")]
     fn decode(data: &[u8]) -> Self {
         let mut cursor = std::io::Cursor::new(data);
@@ -64,7 +70,7 @@ impl Page {
 
     #[cfg(not(feature = "binrw"))]
     fn decode(data: &[u8]) -> Self {
-        Page {
+        PageHeader {
             id: Pgid(utils::read_value::<u64>(data, 0)),
             flags: PageFlag::from_bits_truncate(utils::read_value::<u16>(data, 8)),
             count: utils::read_value::<u16>(data, 10),
@@ -73,7 +79,7 @@ impl Page {
     }
 }
 
-impl TryFrom<&[u8]> for Page {
+impl TryFrom<&[u8]> for PageHeader {
     type Error = errors::DatabaseError;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
@@ -142,28 +148,35 @@ fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
     )))
 }
 
+/// Meta represent the definition of meta page's structure.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct Meta {
-    // The magic number of bolt database, must be MAGIC_NUMBER.
+    /// The magic number of bolt database, must be MAGIC_NUMBER.
     pub(crate) magic: u32,
-    // Database file format version, must be DATAFILE_VERSION.
+
+    /// Database file format version, must be DATAFILE_VERSION.
     pub(crate) version: u32,
-    // Size in bytes of each page.
+
+    /// Size in bytes of each page.
     pub(crate) page_size: u32,
     _flag: u32, // unused
+
     // Rust doesn't have `type embedding` that Go has, see
     // https://github.com/rust-lang/rfcs/issues/2431 for more detail.
-    // The root data pageid of the database.
+    /// The root data pageid of the database.
     pub(crate) root_pgid: Pgid,
     pub(crate) root_sequence: u64,
-    // The root freelist pageid of the database.
+
+    /// The root freelist pageid of the database.
     pub(crate) freelist_pgid: Pgid,
-    // The max pageid of the database, it shoule be FILE_SIZE / PAGE_SIZE.
+
+    /// The max pageid of the database, it shoule be FILE_SIZE / PAGE_SIZE.
     pub(crate) max_pgid: Pgid,
-    // current max txid of the databse, there have two Meta page, which have bigger txid
-    // is valid.
+
+    /// current max txid of the databse, there have two Meta page, which have bigger txid
+    /// is valid.
     pub(crate) txid: u64,
     pub(crate) checksum: u64,
 }
@@ -210,16 +223,19 @@ impl TryFrom<&[u8]> for Meta {
     }
 }
 
+/// BranchPageElement represent the structure when page is branch.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct BranchPageElement {
-    // pos is the offset of the element's data in the page,
-    // start at current element's position.
+    /// pos is the offset of the element's data in the page,
+    /// start at current element's position.
     pub(crate) pos: u32,
-    // the key's length in bytes.
+
+    /// the key's length in bytes.
     pub(crate) ksize: u32,
-    // the next-level pageid.
+
+    /// the next-level pageid.
     pub(crate) pgid: Pgid,
 }
 
@@ -258,19 +274,23 @@ impl TryFrom<&[u8]> for BranchPageElement {
     }
 }
 
+/// LeafPageElement represent the structure when page is leaf.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
 pub(crate) struct LeafPageElement {
-    // indicate what type of the element, if flags is 1, it's a bucket,
-    // otherwise it's a key-value pair.
+    /// indicate what type of the element, if flags is 1, it's a bucket,
+    /// otherwise it's a key-value pair.
     pub(crate) flags: u32,
-    // pos is the offset of the element's data in the page,
-    // start at current element's position.
+
+    /// pos is the offset of the element's data in the page,
+    /// start at current element's position.
     pub(crate) pos: u32,
-    // the key's length in bytes.
+
+    /// the key's length in bytes.
     pub(crate) ksize: u32,
-    // the value's length in bytes.
+
+    /// the value's length in bytes.
     pub(crate) vsize: u32,
 }
 
@@ -313,19 +333,19 @@ impl TryFrom<&[u8]> for LeafPageElement {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-// Bucket represents the on-file representation of a bucket. It is stored as
-// the `value` of a bucket key. If the root is 0, this bucket is small enough
-// then it's root page can be stored inline in the value, just after the bucket header.
-pub(crate) struct Bucket {
-    // the bucket's root-level page.
+/// BucketHeader represents the on-file representation of a bucket key's value. It is stored as
+/// the `value` of a bucket key. If the root is 0, this bucket is small enough
+/// then it's root page can be stored inline in the value, just after the bucket header.
+pub(crate) struct BucketHeader {
+    /// the bucket's root-level page.
     pub(crate) root: Pgid,
     sequence: u64,
 }
 
-impl Bucket {
+impl BucketHeader {
     #[cfg(not(feature = "binrw"))]
     fn decode(data: &[u8]) -> Self {
-        Bucket {
+        BucketHeader {
             root: Pgid(utils::read_value::<u64>(data, 0)),
             sequence: utils::read_value::<u64>(data, 8),
         }
@@ -339,9 +359,13 @@ impl Bucket {
         options.offset = 0;
         Self::read_options(&mut cursor, &options, ()).unwrap()
     }
+
+    pub(crate) fn is_inline(self) -> bool {
+        Into::<u64>::into(self.root) == 0
+    }
 }
 
-impl TryFrom<&[u8]> for Bucket {
+impl TryFrom<&[u8]> for BucketHeader {
     type Error = errors::DatabaseError;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
@@ -356,10 +380,12 @@ impl TryFrom<&[u8]> for Bucket {
     }
 }
 
-// Represents a marker value to indicate that a file is a Bolt DB.
+pub(crate) const BUCKET_HEADER_SIZE: usize = std::mem::size_of::<BucketHeader>();
+
+/// Represents a marker value to indicate that a file is a Bolt DB.
 pub(crate) const MAGIC_NUMBER: u32 = 0xED0CDAED;
 
-// The data file format version.
+/// The data file format version.
 pub(crate) const DATAFILE_VERSION: u32 = 2;
 
 #[cfg(test)]
@@ -374,7 +400,7 @@ mod tests {
             0, 0, // count
             1, 0, 0, 0, // overflow
         ];
-        let page = Page::try_from(&data as &[u8]).unwrap();
+        let page = PageHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(page.id.0, 1);
         assert_eq!(page.flags.as_u16(), 1);
         assert_eq!(page.count, 0);
@@ -389,7 +415,7 @@ mod tests {
             0, 0, // count
             1, 0, 0, // overflow
         ];
-        let result = Page::try_from(&data as &[u8]);
+        let result = PageHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
@@ -524,7 +550,7 @@ mod tests {
             1, 0, 0, 0, 0, 0, 0, 0, // root
             2, 0, 0, 0, 0, 0, 0, 0, // sequence
         ];
-        let bucket = Bucket::try_from(&data as &[u8]).unwrap();
+        let bucket = BucketHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(bucket.root.0, 1);
         assert_eq!(bucket.sequence, 2);
     }
@@ -535,7 +561,7 @@ mod tests {
             1, 0, 0, 0, 0, 0, 0, 0, // root
             2, 0, 0, 0, 0, 0, 0, // sequence
         ];
-        let result = Bucket::try_from(&data as &[u8]);
+        let result = BucketHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
