@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::bolt::{self, PAGE_HEADER_SIZE};
+use crate::bolt::{self, BUCKET_HEADER_SIZE, PAGE_HEADER_SIZE};
 use crate::errors::DatabaseError;
 use fnv_rs::{Fnv64, FnvHasher};
 use std::ops::IndexMut;
@@ -33,12 +33,19 @@ use std::{
 
 use typed_builder::TypedBuilder;
 
+/// DBWrapper is the bolt reader for multi thread.
 #[derive(Clone)]
 pub struct DBWrapper {
     inner: Arc<Mutex<DB>>,
 }
 
 impl DBWrapper {
+    /// Attempts to open bolt file in read-only mode.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if file doesn't already exist,
+    /// other errors may also be returned according to bolt.
     pub fn open(ancla_options: AnclaOptions) -> Result<Self, DatabaseError> {
         let file = File::open(ancla_options.db_path.clone()).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => DatabaseError::FileNotFound(ancla_options.db_path.clone()),
@@ -57,12 +64,16 @@ impl DBWrapper {
         })
     }
 
+    /// Creates an bucket iterator, and the iterator will return errors when
+    /// read database.
     pub fn iter_buckets(&self) -> impl Iterator<Item = Result<Bucket, DatabaseError>> {
         BucketIterator {
             iter: self.iter_items(),
         }
     }
 
+    /// Creates an item iterator (contains bucket、key-value and so on), and
+    /// the iterator will return errors when read database.
     pub fn iter_items(&self) -> impl Iterator<Item = Result<DbItem, DatabaseError>> {
         let meta = self.inner.lock().unwrap().get_meta();
 
@@ -77,6 +88,8 @@ impl DBWrapper {
         }
     }
 
+    /// Creates an page iterator, and the iterator will return errors when
+    /// read database.
     pub fn iter_pages(&self) -> impl Iterator<Item = PageInfo> {
         let meta = self.inner.lock().unwrap().get_meta();
 
@@ -337,7 +350,7 @@ impl DB {
         }
 
         let data = self.read(page_id * 4096, PAGE_HEADER_SIZE);
-        let page: bolt::Page = TryFrom::try_from(data.as_slice()).unwrap();
+        let page: bolt::PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
 
         let data_len = 4096 * (page.overflow + 1) as usize;
         let data = self.read(page_id * 4096, data_len);
@@ -373,7 +386,7 @@ impl DB {
     }
 
     fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
-        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+        let page: bolt::PageHeader = TryFrom::try_from(data).unwrap();
         let mut branch_elements: Vec<BranchElement> = Vec::with_capacity(page.count as usize);
         for i in 0..page.count {
             let start = (16 + i * 16) as usize;
@@ -391,8 +404,9 @@ impl DB {
         branch_elements
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn read_page_leaf_elements(&mut self, data: &[u8]) -> Vec<LeafElement> {
-        let page: bolt::Page = TryFrom::try_from(data).unwrap();
+        let page: bolt::PageHeader = TryFrom::try_from(data).unwrap();
         let mut leaf_elements: Vec<LeafElement> = Vec::with_capacity(page.count as usize);
         for i in 0..page.count {
             let start = (16 + i * 16) as usize;
@@ -407,13 +421,14 @@ impl DB {
                 .unwrap();
             if leaf_element.flags == 0x01 {
                 // the value is bucketHeaderSize, same as root + sequence
-                let bucket_page_id = self.read_page_u64(value, 0);
-                if bucket_page_id == 0 {
+                let bucket_header: bolt::BucketHeader = TryFrom::try_from(value).unwrap();
+                if bucket_header.is_inline() {
                     // It's a inline bucket, skip bucketHeaderSize, it's root + sequence
-                    let page_leaf_elements = self.read_page_leaf_elements(value.get(16..).unwrap());
+                    let page_leaf_elements =
+                        self.read_page_leaf_elements(value.get(BUCKET_HEADER_SIZE..).unwrap());
                     leaf_elements.push(LeafElement::InlineBucket {
                         name: key.to_vec(),
-                        pgid: bucket_page_id,
+                        pgid: bucket_header.root.into(),
                         items: page_leaf_elements
                             .into_iter()
                             .map(|x| match x {
@@ -425,7 +440,7 @@ impl DB {
                 } else {
                     leaf_elements.push(LeafElement::Bucket {
                         name: key.to_vec(),
-                        pgid: bucket_page_id,
+                        pgid: bucket_header.root.into(),
                     });
                 }
             } else {
@@ -439,7 +454,7 @@ impl DB {
     }
 
     fn read_meta_page(&mut self, data: &[u8], id: u64) -> Result<bolt::Meta, DatabaseError> {
-        let page: bolt::Page = TryFrom::try_from(data)?;
+        let page: bolt::PageHeader = TryFrom::try_from(data)?;
         if !page.flags.contains(bolt::PageFlag::MetaPageFlag) {
             return Err(DatabaseError::InvalidPageType {
                 expect: bolt::PageFlag::MetaPageFlag.as_u16(),
@@ -629,7 +644,7 @@ impl Iterator for PageIterator {
                 parent_page_id: None,
             });
         } else if data.typ == PageType::Freelist {
-            let page: bolt::Page = TryFrom::try_from(data.data.as_slice()).unwrap();
+            let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
             let freelist = self
                 .db
                 .inner
@@ -657,7 +672,7 @@ impl Iterator for PageIterator {
             });
         }
 
-        let page: bolt::Page = TryFrom::try_from(data.data.as_slice()).unwrap();
+        let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
         match data.elem.as_ref().expect("must be leaf or branch") {
             Element::Branch(branch_elements) => {
                 for branch_item in branch_elements {
