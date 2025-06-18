@@ -222,6 +222,7 @@ enum LeafElement {
 pub struct KeyValue {
     pub key: Vec<u8>,
     pub value: Vec<u8>,
+    pub depth: u64,
 }
 
 #[derive(Clone)]
@@ -251,7 +252,12 @@ impl Iterator for DbItemIterator {
                 ItemNode::Elements(ref kvs) => {
                     if item.index < kvs.len() {
                         item.index += 1;
-                        return Some(Ok(DbItem::KeyValue(kvs[item.index - 1].clone())));
+                        let kv = &kvs[item.index - 1];
+                        return Some(Ok(DbItem::KeyValue(KeyValue {
+                            key: kv.key.clone(),
+                            value: kv.value.clone(),
+                            depth: item.depth.map(|depth| depth + 1).unwrap_or(0),
+                        })));
                     }
 
                     self.stack.pop();
@@ -305,7 +311,11 @@ impl Iterator for DbItemIterator {
                                 })));
                             }
                             LeafElement::KeyValue(kv) => {
-                                return Some(Ok(DbItem::KeyValue(kv)));
+                                return Some(Ok(DbItem::KeyValue(KeyValue {
+                                    key: kv.key,
+                                    value: kv.value,
+                                    depth,
+                                })));
                             }
                         }
                     }
@@ -447,6 +457,7 @@ impl DB {
                 leaf_elements.push(LeafElement::KeyValue(KeyValue {
                     key: key.to_vec(),
                     value: value.to_vec(),
+                    depth: 0,
                 }));
             }
         }
@@ -887,12 +898,8 @@ mod tests {
         assert_buckets_equal(0, &String::from(""), &mut iter, &expect_buckets);
     }
 
-    fn assert_child_items_equal<T>(
-        _depth: u64,
-        parent: &String,
-        iter: &mut T,
-        expect_items: &[Item],
-    ) where
+    fn assert_child_items_equal<T>(depth: u64, parent: &String, iter: &mut T, expect_items: &[Item])
+    where
         T: Iterator<Item = Result<super::DbItem, DatabaseError>>,
     {
         for (i, expect) in expect_items.iter().enumerate() {
@@ -917,7 +924,12 @@ mod tests {
                             "different key's value name under: {}, key: {}",
                             parent,
                             key
-                        )
+                        );
+                        assert_eq!(
+                            depth, kv.depth,
+                            "different child bucket's item depth under: {}, key: {}",
+                            parent, key,
+                        );
                     }
                     _ => {
                         panic!("want kv item at {} but got another under: {}", i, parent);
@@ -931,9 +943,14 @@ mod tests {
                             "different child bucket name under: {}",
                             parent
                         );
+                        assert_eq!(
+                            depth, actual.depth,
+                            "different child bucket depth under: {}, key: {}",
+                            parent, bucket.name
+                        );
 
                         assert_child_items_equal(
-                            _depth + 1,
+                            depth + 1,
                             &format!("{}/{}", parent, bucket.name),
                             iter,
                             bucket.items.as_slice(),
@@ -946,9 +963,14 @@ mod tests {
                             "different child bucket name under: {}",
                             parent
                         );
+                        assert_eq!(
+                            depth, actual.depth,
+                            "different child bucket depth under: {}, key: {}",
+                            parent, bucket.name
+                        );
 
                         assert_child_items_equal(
-                            _depth + 1,
+                            depth + 1,
                             &format!("{}/{}", parent, bucket.name),
                             iter,
                             bucket.items.as_slice(),
@@ -983,8 +1005,8 @@ mod tests {
                     );
                     assert_eq!(
                         depth, actual.depth,
-                        "different child bucket depth under: {}",
-                        parent,
+                        "different child bucket depth under: {}, key: {}",
+                        parent, expect.name
                     );
 
                     assert_child_items_equal(
@@ -1001,6 +1023,12 @@ mod tests {
                         "different child bucket name under: {}",
                         parent
                     );
+                    assert_eq!(
+                        depth, actual.depth,
+                        "different child bucket depth under: {}, key: {}",
+                        parent, expect.name,
+                    );
+
                     assert_child_items_equal(
                         depth + 1,
                         &format!("{}/{}", parent, expect.name),
