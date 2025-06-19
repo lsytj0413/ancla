@@ -20,8 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::bolt::{self, BUCKET_HEADER_SIZE, PAGE_HEADER_SIZE};
 use crate::errors::DatabaseError;
+use boltypes as bolt;
 use fnv_rs::{Fnv64, FnvHasher};
 use std::ops::IndexMut;
 use std::sync::{Arc, Mutex};
@@ -140,9 +140,9 @@ impl DBWrapper {
 pub struct DB {
     file: File,
 
-    page_datas: BTreeMap<bolt::Pgid, Arc<Page>>,
-    meta0: Option<bolt::Meta>,
-    meta1: Option<bolt::Meta>,
+    page_datas: BTreeMap<boltypes::Pgid, Arc<Page>>,
+    meta0: Option<boltypes::Meta>,
+    meta1: Option<boltypes::Meta>,
 }
 
 struct Page {
@@ -359,25 +359,25 @@ impl DB {
             return Arc::clone(data);
         }
 
-        let data = self.read(page_id * 4096, PAGE_HEADER_SIZE);
-        let page: bolt::PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
+        let data = self.read(page_id * 4096, boltypes::PAGE_HEADER_SIZE);
+        let page: boltypes::PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
 
         let data_len = 4096 * (page.overflow + 1) as usize;
         let data = self.read(page_id * 4096, data_len);
 
-        let (typ, elem) = if page.flags.contains(bolt::PageFlag::LeafPageFlag) {
+        let (typ, elem) = if page.flags.contains(boltypes::PageFlag::LeafPageFlag) {
             (
                 PageType::DataLeaf,
                 Some(Element::Leaf(self.read_page_leaf_elements(&data))),
             )
-        } else if page.flags.contains(bolt::PageFlag::BranchPageFlag) {
+        } else if page.flags.contains(boltypes::PageFlag::BranchPageFlag) {
             (
                 PageType::DataBranch,
                 Some(Element::Branch(self.read_page_branch_elements(&data))),
             )
-        } else if page.flags.contains(bolt::PageFlag::MetaPageFlag) {
+        } else if page.flags.contains(boltypes::PageFlag::MetaPageFlag) {
             (PageType::Meta, None)
-        } else if page.flags.contains(bolt::PageFlag::FreelistPageFlag) {
+        } else if page.flags.contains(boltypes::PageFlag::FreelistPageFlag) {
             (PageType::Freelist, None)
         } else {
             unreachable!("unknown type")
@@ -434,8 +434,8 @@ impl DB {
                 let bucket_header: bolt::BucketHeader = TryFrom::try_from(value).unwrap();
                 if bucket_header.is_inline() {
                     // It's a inline bucket, skip bucketHeaderSize, it's root + sequence
-                    let page_leaf_elements =
-                        self.read_page_leaf_elements(value.get(BUCKET_HEADER_SIZE..).unwrap());
+                    let page_leaf_elements = self
+                        .read_page_leaf_elements(value.get(bolt::BUCKET_HEADER_SIZE..).unwrap());
                     leaf_elements.push(LeafElement::InlineBucket {
                         name: key.to_vec(),
                         pgid: bucket_header.root.into(),

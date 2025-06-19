@@ -20,10 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-mod bolt;
 mod db;
 mod errors;
-mod utils;
 
 pub use db::{AnclaOptions, Bucket, DBWrapper, DbItem, Info, KeyValue, PageInfo};
 pub use errors::DatabaseError;

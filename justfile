@@ -58,7 +58,10 @@ check-fmt:
 clippy: (_target-installed target)
     cargo hack clippy {{ _target-option }} --all-targets --workspace --each-feature -- -D warnings
 
-lint: check-fmt clippy
+unused-dep:
+    cargo machete
+
+lint: check-fmt clippy unused-dep
 
 build *flags: (_target-installed target)
     cargo build {{ _target-option }} {{ _features }} {{ flags }}
