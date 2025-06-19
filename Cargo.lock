@@ -30,8 +30,7 @@ dependencies = [
 name = "ancla"
 version = "0.1.0"
 dependencies = [
- "binrw",
- "bitflags",
+ "boltypes",
  "fnv_rs",
  "serde",
  "serde_json",
@@ -171,6 +170,17 @@ dependencies = [
  "comfy-table",
  "tokio",
  "vergen",
+]
+
+[[package]]
+name = "boltypes"
+version = "0.1.0"
+dependencies = [
+ "binrw",
+ "bitflags",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.0",
 ]
 
 [[package]]

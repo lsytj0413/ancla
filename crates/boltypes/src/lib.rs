@@ -20,18 +20,40 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::errors;
-use crate::utils;
 #[cfg(feature = "binrw")]
 use binrw::BinRead;
 use bitflags::bitflags;
+use thiserror::Error;
+
+#[derive(Error, Debug, Eq, PartialEq, Clone)]
+pub enum Error {
+    #[error("data buffer is too small, expect {expect}, got {got}")]
+    TooSmallData { expect: usize, got: usize },
+}
+
+mod utils {
+    trait ByteReadMarker {}
+
+    impl ByteReadMarker for u16 {}
+    impl ByteReadMarker for u32 {}
+    impl ByteReadMarker for u64 {}
+
+    #[allow(private_bounds)]
+    pub(crate) fn read_value<T: ByteReadMarker>(data: &[u8], offset: usize) -> T {
+        let ptr: *const u8 = data.as_ptr();
+        unsafe {
+            let offset_ptr = ptr.add(offset) as *const T;
+            offset_ptr.read_unaligned()
+        }
+    }
+}
 
 /// PageHeader is the bolt's page metadata definition, every page must have this definition
 /// at it's start (offset 0), it defines the type of page and how to parse it etc.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub(crate) struct PageHeader {
+pub struct PageHeader {
     /// id is the identifier of the page, it start from 0,
     /// and is incremented by 1 for each page.
     /// There have two special pages:
@@ -40,23 +62,23 @@ pub(crate) struct PageHeader {
     ///
     /// The are the root page of database, and the meta (valid) which have bigger
     /// txid is current available.
-    pub(crate) id: Pgid,
+    pub id: Pgid,
 
     /// indicate which type this page is.
     #[cfg_attr(feature = "binrw", br(parse_with = pageflag_custom_parse))]
-    pub(crate) flags: PageFlag,
+    pub flags: PageFlag,
 
     /// number of element in this page, if the page is freelist page:
     /// 1. when value < 0xFFFF, it's the number of pageid
     /// 2. when value is 0xFFFF, the next 8-bytes（page's offset 16） is the number of pageid.
-    pub(crate) count: u16,
+    pub count: u16,
 
     /// the continous number of page, all page's data is stored in the buffer which
     /// size is (1 + overflow) * PAGE_SIZE.
-    pub(crate) overflow: u32,
+    pub overflow: u32,
 }
 
-pub(crate) const PAGE_HEADER_SIZE: usize = std::mem::size_of::<PageHeader>();
+pub const PAGE_HEADER_SIZE: usize = std::mem::size_of::<PageHeader>();
 
 impl PageHeader {
     #[cfg(feature = "binrw")]
@@ -80,11 +102,11 @@ impl PageHeader {
 }
 
 impl TryFrom<&[u8]> for PageHeader {
-    type Error = errors::DatabaseError;
+    type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(errors::DatabaseError::TooSmallData {
+            return Err(Error::TooSmallData {
                 expect: 16,
                 got: data.len(),
             });
@@ -98,7 +120,7 @@ impl TryFrom<&[u8]> for PageHeader {
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub(crate) struct Pgid(pub(crate) u64);
+pub struct Pgid(pub u64);
 
 impl From<u64> for Pgid {
     fn from(id: u64) -> Self {
@@ -114,7 +136,7 @@ impl From<Pgid> for u64 {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub(crate) struct PageFlag: u16 {
+    pub struct PageFlag: u16 {
         // Branch page contains the branch element, which represent the
         // sub page and it's minest key value.
         const BranchPageFlag = 0x01;
@@ -152,33 +174,33 @@ fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub(crate) struct Meta {
+pub struct Meta {
     /// The magic number of bolt database, must be MAGIC_NUMBER.
-    pub(crate) magic: u32,
+    pub magic: u32,
 
     /// Database file format version, must be DATAFILE_VERSION.
-    pub(crate) version: u32,
+    pub version: u32,
 
     /// Size in bytes of each page.
-    pub(crate) page_size: u32,
+    pub page_size: u32,
     _flag: u32, // unused
 
     // Rust doesn't have `type embedding` that Go has, see
     // https://github.com/rust-lang/rfcs/issues/2431 for more detail.
     /// The root data pageid of the database.
-    pub(crate) root_pgid: Pgid,
-    pub(crate) root_sequence: u64,
+    pub root_pgid: Pgid,
+    pub root_sequence: u64,
 
     /// The root freelist pageid of the database.
-    pub(crate) freelist_pgid: Pgid,
+    pub freelist_pgid: Pgid,
 
     /// The max pageid of the database, it shoule be FILE_SIZE / PAGE_SIZE.
-    pub(crate) max_pgid: Pgid,
+    pub max_pgid: Pgid,
 
     /// current max txid of the databse, there have two Meta page, which have bigger txid
     /// is valid.
-    pub(crate) txid: u64,
-    pub(crate) checksum: u64,
+    pub txid: u64,
+    pub checksum: u64,
 }
 
 impl Meta {
@@ -209,11 +231,11 @@ impl Meta {
 }
 
 impl TryFrom<&[u8]> for Meta {
-    type Error = errors::DatabaseError;
+    type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 80 {
-            return Err(errors::DatabaseError::TooSmallData {
+            return Err(Error::TooSmallData {
                 expect: 80,
                 got: data.len(),
             });
@@ -227,16 +249,16 @@ impl TryFrom<&[u8]> for Meta {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub(crate) struct BranchPageElement {
+pub struct BranchPageElement {
     /// pos is the offset of the element's data in the page,
     /// start at current element's position.
-    pub(crate) pos: u32,
+    pub pos: u32,
 
     /// the key's length in bytes.
-    pub(crate) ksize: u32,
+    pub ksize: u32,
 
     /// the next-level pageid.
-    pub(crate) pgid: Pgid,
+    pub pgid: Pgid,
 }
 
 impl BranchPageElement {
@@ -260,11 +282,11 @@ impl BranchPageElement {
 }
 
 impl TryFrom<&[u8]> for BranchPageElement {
-    type Error = errors::DatabaseError;
+    type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(errors::DatabaseError::TooSmallData {
+            return Err(Error::TooSmallData {
                 expect: 16,
                 got: data.len(),
             });
@@ -278,20 +300,20 @@ impl TryFrom<&[u8]> for BranchPageElement {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub(crate) struct LeafPageElement {
+pub struct LeafPageElement {
     /// indicate what type of the element, if flags is 1, it's a bucket,
     /// otherwise it's a key-value pair.
-    pub(crate) flags: u32,
+    pub flags: u32,
 
     /// pos is the offset of the element's data in the page,
     /// start at current element's position.
-    pub(crate) pos: u32,
+    pub pos: u32,
 
     /// the key's length in bytes.
-    pub(crate) ksize: u32,
+    pub ksize: u32,
 
     /// the value's length in bytes.
-    pub(crate) vsize: u32,
+    pub vsize: u32,
 }
 
 impl LeafPageElement {
@@ -316,11 +338,11 @@ impl LeafPageElement {
 }
 
 impl TryFrom<&[u8]> for LeafPageElement {
-    type Error = errors::DatabaseError;
+    type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(errors::DatabaseError::TooSmallData {
+            return Err(Error::TooSmallData {
                 expect: 16,
                 got: data.len(),
             });
@@ -336,10 +358,10 @@ impl TryFrom<&[u8]> for LeafPageElement {
 /// BucketHeader represents the on-file representation of a bucket key's value. It is stored as
 /// the `value` of a bucket key. If the root is 0, this bucket is small enough
 /// then it's root page can be stored inline in the value, just after the bucket header.
-pub(crate) struct BucketHeader {
+pub struct BucketHeader {
     /// the bucket's root-level page.
-    pub(crate) root: Pgid,
-    sequence: u64,
+    pub root: Pgid,
+    pub sequence: u64,
 }
 
 impl BucketHeader {
@@ -360,17 +382,17 @@ impl BucketHeader {
         Self::read_options(&mut cursor, &options, ()).unwrap()
     }
 
-    pub(crate) fn is_inline(self) -> bool {
+    pub fn is_inline(self) -> bool {
         Into::<u64>::into(self.root) == 0
     }
 }
 
 impl TryFrom<&[u8]> for BucketHeader {
-    type Error = errors::DatabaseError;
+    type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
         if data.len() < 16 {
-            return Err(errors::DatabaseError::TooSmallData {
+            return Err(Error::TooSmallData {
                 expect: 16,
                 got: data.len(),
             });
@@ -380,13 +402,13 @@ impl TryFrom<&[u8]> for BucketHeader {
     }
 }
 
-pub(crate) const BUCKET_HEADER_SIZE: usize = std::mem::size_of::<BucketHeader>();
+pub const BUCKET_HEADER_SIZE: usize = std::mem::size_of::<BucketHeader>();
 
 /// Represents a marker value to indicate that a file is a Bolt DB.
-pub(crate) const MAGIC_NUMBER: u32 = 0xED0CDAED;
+pub const MAGIC_NUMBER: u32 = 0xED0CDAED;
 
 /// The data file format version.
-pub(crate) const DATAFILE_VERSION: u32 = 2;
+pub const DATAFILE_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {
@@ -419,7 +441,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            errors::DatabaseError::TooSmallData {
+            Error::TooSmallData {
                 expect: 16,
                 got: 15
             }
@@ -472,7 +494,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            errors::DatabaseError::TooSmallData {
+            Error::TooSmallData {
                 expect: 80,
                 got: 79
             }
@@ -503,7 +525,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            errors::DatabaseError::TooSmallData {
+            Error::TooSmallData {
                 expect: 16,
                 got: 15
             }
@@ -537,7 +559,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            errors::DatabaseError::TooSmallData {
+            Error::TooSmallData {
                 expect: 16,
                 got: 15
             }
@@ -565,7 +587,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            errors::DatabaseError::TooSmallData {
+            Error::TooSmallData {
                 expect: 16,
                 got: 15
             }
