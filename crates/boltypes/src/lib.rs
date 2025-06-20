@@ -20,15 +20,30 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use core::fmt;
+
 #[cfg(feature = "binrw")]
 use binrw::BinRead;
 use bitflags::bitflags;
+use fnv_rs::{Fnv64, FnvHasher};
 use thiserror::Error;
 
 #[derive(Error, Debug, Eq, PartialEq, Clone)]
 pub enum Error {
     #[error("data buffer is too small, expect {expect}, got {got}")]
     TooSmallData { expect: usize, got: usize },
+
+    #[error("expect kv leaf element but got an bucket")]
+    UnexpectBucketLeaf,
+
+    #[error("page {id} checksum is invalid, expect {expect}, got {got}")]
+    InvalidPageChecksum { expect: u64, got: u64, id: u64 },
+
+    #[error("page {id} magic is invalid, expect {expect}, got {got}")]
+    InvalidPageMagic { expect: u32, got: u32, id: u64 },
+
+    #[error("page {id} version is invalid, expect {expect}, got {got}")]
+    InvalidPageVersion { expect: u32, got: u32, id: u64 },
 }
 
 mod utils {
@@ -134,6 +149,12 @@ impl From<Pgid> for u64 {
     }
 }
 
+impl std::fmt::Display for Pgid {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PageFlag: u16 {
@@ -155,6 +176,28 @@ impl PageFlag {
     pub fn as_u16(&self) -> u16 {
         self.bits()
     }
+
+    pub fn is_branch_page(&self) -> bool {
+        self.contains(PageFlag::BranchPageFlag)
+    }
+
+    pub fn is_meta_page(&self) -> bool {
+        self.contains(PageFlag::MetaPageFlag)
+    }
+
+    pub fn is_leaf_page(&self) -> bool {
+        self.contains(PageFlag::LeafPageFlag)
+    }
+
+    pub fn is_freelist_page(&self) -> bool {
+        self.contains(PageFlag::FreelistPageFlag)
+    }
+}
+
+impl std::fmt::Display for PageFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[cfg(feature = "binrw")]
@@ -168,6 +211,86 @@ fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
     Ok(PageFlag::from_bits_truncate(utils::read_value::<u16>(
         &buf, 0,
     )))
+}
+
+#[derive(Debug, Clone)]
+pub struct Page(Vec<u8>);
+
+impl Page {
+    pub fn new(data: Vec<u8>) -> Page {
+        Page(data)
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub fn page_header(&self) -> PageHeader {
+        // TODO: remove unwrap
+        TryFrom::try_from(self.0.as_slice()).unwrap()
+    }
+
+    pub fn meta(&self) -> Result<Meta, Error> {
+        let header = self.page_header();
+        assert!(
+            header.flags.is_meta_page(),
+            "expect meta page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        let actual_checksum = u64::from_be_bytes(
+            Fnv64::hash(&self.0[16..72])
+                .as_bytes()
+                .try_into()
+                .expect("calculate checksum successfully"),
+        );
+        // TODO: remove unwrap
+        let meta: Meta = TryFrom::try_from(self.0.as_slice()).unwrap();
+        if meta.checksum != actual_checksum {
+            return Err(Error::InvalidPageChecksum {
+                expect: actual_checksum,
+                got: meta.checksum,
+                id: header.id.into(),
+            });
+        }
+        if meta.magic != MAGIC_NUMBER {
+            return Err(Error::InvalidPageMagic {
+                expect: MAGIC_NUMBER,
+                got: meta.magic,
+                id: header.id.into(),
+            });
+        }
+        if meta.version != DATAFILE_VERSION {
+            return Err(Error::InvalidPageVersion {
+                expect: DATAFILE_VERSION,
+                got: meta.version,
+                id: header.id.into(),
+            });
+        }
+        Ok(meta)
+    }
+
+    pub fn branch_elements(&self) -> Vec<BranchElement> {
+        let header = self.page_header();
+        assert!(
+            header.flags.is_branch_page(),
+            "expect branch page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        // TODO: remove unwrap
+        let mut elements: Vec<BranchElement> = Vec::with_capacity(header.count as usize);
+        for i in 0..header.count {
+            let start = PAGE_HEADER_SIZE + (i as usize) * BRANCH_ELEMENT_HEADER_SIZE;
+            let elem_header: BranchElementHeader =
+                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+            elements.push(BranchElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+        }
+
+        elements
+    }
 }
 
 /// Meta represent the definition of meta page's structure.
@@ -245,11 +368,11 @@ impl TryFrom<&[u8]> for Meta {
     }
 }
 
-/// BranchPageElement represent the structure when page is branch.
+/// Represent the structure when page is branch.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub struct BranchPageElement {
+pub struct BranchElementHeader {
     /// pos is the offset of the element's data in the page,
     /// start at current element's position.
     pub pos: u32,
@@ -261,10 +384,10 @@ pub struct BranchPageElement {
     pub pgid: Pgid,
 }
 
-impl BranchPageElement {
+impl BranchElementHeader {
     #[cfg(not(feature = "binrw"))]
     fn decode(data: &[u8]) -> Self {
-        BranchPageElement {
+        BranchElementHeader {
             pos: utils::read_value::<u32>(data, 0),
             ksize: utils::read_value::<u32>(data, 4),
             pgid: Pgid(utils::read_value::<u64>(data, 8)),
@@ -281,7 +404,7 @@ impl BranchPageElement {
     }
 }
 
-impl TryFrom<&[u8]> for BranchPageElement {
+impl TryFrom<&[u8]> for BranchElementHeader {
     type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
@@ -296,11 +419,51 @@ impl TryFrom<&[u8]> for BranchPageElement {
     }
 }
 
-/// LeafPageElement represent the structure when page is leaf.
+pub const BRANCH_ELEMENT_HEADER_SIZE: usize = std::mem::size_of::<BranchElementHeader>();
+
+/// Represents branch element in branch page.
+#[derive(Debug, Clone)]
+pub struct BranchElement {
+    pub key: Vec<u8>,
+    pub pgid: Pgid,
+}
+
+impl BranchElement {
+    /// Returns the branch element in the page data.
+    ///
+    /// # Arguments
+    ///
+    /// * `page` - data of current page
+    /// * `elem` - element header of current branch
+    /// * `idx` - idx of current element header in this page, start from 0
+    pub fn from_page(
+        page: &[u8],
+        elem: &BranchElementHeader,
+        idx: u16,
+    ) -> Result<BranchElement, Error> {
+        let start = PAGE_HEADER_SIZE + (idx as usize) * BRANCH_ELEMENT_HEADER_SIZE;
+        let key_start = start + elem.pos as usize;
+        let key_end = key_start + elem.ksize as usize;
+
+        if key_end > page.len() {
+            return Err(Error::TooSmallData {
+                expect: key_end,
+                got: page.len(),
+            });
+        }
+
+        Ok(BranchElement {
+            key: page.get(key_start..key_end).unwrap().to_vec(),
+            pgid: elem.pgid,
+        })
+    }
+}
+
+/// LeafElementHeader represent the element's structure when page is leaf.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(C)]
-pub struct LeafPageElement {
+pub struct LeafElementHeader {
     /// indicate what type of the element, if flags is 1, it's a bucket,
     /// otherwise it's a key-value pair.
     pub flags: u32,
@@ -316,10 +479,10 @@ pub struct LeafPageElement {
     pub vsize: u32,
 }
 
-impl LeafPageElement {
+impl LeafElementHeader {
     #[cfg(not(feature = "binrw"))]
     fn decode(data: &[u8]) -> Self {
-        LeafPageElement {
+        LeafElementHeader {
             flags: utils::read_value::<u32>(data, 0),
             pos: utils::read_value::<u32>(data, 4),
             ksize: utils::read_value::<u32>(data, 8),
@@ -335,9 +498,13 @@ impl LeafPageElement {
         options.offset = 0;
         Self::read_options(&mut cursor, &options, ()).unwrap()
     }
+
+    pub fn is_bucket(&self) -> bool {
+        self.flags == 0x01
+    }
 }
 
-impl TryFrom<&[u8]> for LeafPageElement {
+impl TryFrom<&[u8]> for LeafElementHeader {
     type Error = Error;
 
     fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
@@ -351,6 +518,8 @@ impl TryFrom<&[u8]> for LeafPageElement {
         Ok(Self::decode(data))
     }
 }
+
+pub const LEAF_ELEMENT_HEADER_SIZE: usize = std::mem::size_of::<LeafElementHeader>();
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
@@ -409,6 +578,49 @@ pub const MAGIC_NUMBER: u32 = 0xED0CDAED;
 
 /// The data file format version.
 pub const DATAFILE_VERSION: u32 = 2;
+
+/// Represents key and value element in leaf page.
+#[derive(Clone, Debug, Default)]
+pub struct KeyValue {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+impl KeyValue {
+    /// Returns the key and value in the page data.
+    ///
+    /// # Arguments
+    ///
+    /// * `page` - data of current page
+    /// * `elem` - leaf element header of current kv, it can't be a bucket
+    /// * `idx` - idx of current leaf element header in this page, start from 0
+    ///
+    /// # Returns
+    ///
+    /// kv of current leaf element
+    pub fn from_page(page: &[u8], elem: &LeafElementHeader, idx: u16) -> Result<KeyValue, Error> {
+        if elem.is_bucket() {
+            return Err(Error::UnexpectBucketLeaf);
+        }
+
+        let start = PAGE_HEADER_SIZE + (idx as usize) * LEAF_ELEMENT_HEADER_SIZE;
+        let key_start = start + elem.pos as usize;
+        let key_end = key_start + elem.ksize as usize;
+        let value_end = key_end + elem.vsize as usize;
+
+        if value_end > page.len() {
+            return Err(Error::TooSmallData {
+                expect: value_end,
+                got: page.len(),
+            });
+        }
+
+        Ok(KeyValue {
+            key: page.get(key_start..key_end).unwrap().to_vec(),
+            value: page.get(key_end..value_end).unwrap().to_vec(),
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -508,7 +720,7 @@ mod tests {
             2, 0, 0, 0, // ksize
             1, 0, 0, 0, 0, 0, 0, 0, // pgid
         ];
-        let element = BranchPageElement::try_from(&data as &[u8]).unwrap();
+        let element = BranchElementHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(element.pos, 1);
         assert_eq!(element.ksize, 2);
         assert_eq!(element.pgid.0, 1);
@@ -521,7 +733,7 @@ mod tests {
             2, 0, 0, 0, // ksize
             1, 0, 0, 0, 0, 0, 0, // pgid
         ];
-        let result = BranchPageElement::try_from(&data as &[u8]);
+        let result = BranchElementHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
@@ -540,7 +752,7 @@ mod tests {
             3, 0, 0, 0, // ksize
             4, 0, 0, 0, // vsize
         ];
-        let element = LeafPageElement::try_from(&data as &[u8]).unwrap();
+        let element = LeafElementHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(element.flags, 1);
         assert_eq!(element.pos, 2);
         assert_eq!(element.ksize, 3);
@@ -555,7 +767,7 @@ mod tests {
             3, 0, 0, 0, // ksize
             4, 0, 0, // vsize
         ];
-        let result = LeafPageElement::try_from(&data as &[u8]);
+        let result = LeafElementHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),

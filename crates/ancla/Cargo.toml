@@ -16,7 +16,6 @@ default = []
 binrw = ["boltypes/binrw"]
 
 [dependencies]
-fnv_rs = "0.4.3"
 thiserror = "2.0.0"
 typed-builder = "0.20.0"
 boltypes = { workspace = true }

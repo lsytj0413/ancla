@@ -22,7 +22,6 @@
 
 use crate::errors::DatabaseError;
 use boltypes as bolt;
-use fnv_rs::{Fnv64, FnvHasher};
 use std::ops::IndexMut;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -149,12 +148,12 @@ struct Page {
     id: u64,
     typ: PageType,
     overflow: u64,
-    data: Vec<u8>,
+    data: boltypes::Page,
     elem: Option<Element>,
 }
 
 enum Element {
-    Branch(Vec<BranchElement>),
+    Branch(Vec<boltypes::BranchElement>),
     Leaf(Vec<LeafElement>),
 }
 
@@ -196,12 +195,6 @@ pub enum PageType {
     DataBranch,
     Freelist,
     Free,
-}
-
-#[derive(Debug, Clone)]
-struct BranchElement {
-    key: Vec<u8>,
-    pgid: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -328,7 +321,7 @@ impl Iterator for DbItemIterator {
                         item.index += 1;
                         let depth = item.depth;
                         self.stack.push(IterItem {
-                            node: ItemNode::Page(From::from(elem.pgid)),
+                            node: ItemNode::Page(elem.pgid),
                             index: 0,
                             depth,
                             parent_bucket: parent_bucket.clone(),
@@ -364,20 +357,21 @@ impl DB {
 
         let data_len = 4096 * (page.overflow + 1) as usize;
         let data = self.read(page_id * 4096, data_len);
+        let data = bolt::Page::new(data);
 
-        let (typ, elem) = if page.flags.contains(boltypes::PageFlag::LeafPageFlag) {
+        let (typ, elem) = if page.flags.is_leaf_page() {
             (
                 PageType::DataLeaf,
-                Some(Element::Leaf(self.read_page_leaf_elements(&data))),
+                Some(Element::Leaf(self.read_page_leaf_elements(data.as_slice()))),
             )
-        } else if page.flags.contains(boltypes::PageFlag::BranchPageFlag) {
+        } else if page.flags.is_branch_page() {
             (
                 PageType::DataBranch,
-                Some(Element::Branch(self.read_page_branch_elements(&data))),
+                Some(Element::Branch(data.branch_elements())),
             )
-        } else if page.flags.contains(boltypes::PageFlag::MetaPageFlag) {
+        } else if page.flags.is_meta_page() {
             (PageType::Meta, None)
-        } else if page.flags.contains(boltypes::PageFlag::FreelistPageFlag) {
+        } else if page.flags.is_freelist_page() {
             (PageType::Freelist, None)
         } else {
             unreachable!("unknown type")
@@ -395,33 +389,14 @@ impl DB {
         Arc::clone(&data)
     }
 
-    fn read_page_branch_elements(&mut self, data: &[u8]) -> Vec<BranchElement> {
-        let page: bolt::PageHeader = TryFrom::try_from(data).unwrap();
-        let mut branch_elements: Vec<BranchElement> = Vec::with_capacity(page.count as usize);
-        for i in 0..page.count {
-            let start = (16 + i * 16) as usize;
-            let branch_element: bolt::BranchPageElement =
-                bolt::BranchPageElement::try_from(data.get(start..data.len()).unwrap()).unwrap();
-            let key_start = 16 + i * 16 + branch_element.pos as u16;
-            let key_data = data
-                .get((key_start as usize)..((key_start + branch_element.ksize as u16) as usize))
-                .unwrap();
-            branch_elements.push(BranchElement {
-                key: key_data.to_vec(),
-                pgid: branch_element.pgid.into(),
-            });
-        }
-        branch_elements
-    }
-
     #[allow(clippy::only_used_in_recursion)]
     fn read_page_leaf_elements(&mut self, data: &[u8]) -> Vec<LeafElement> {
         let page: bolt::PageHeader = TryFrom::try_from(data).unwrap();
         let mut leaf_elements: Vec<LeafElement> = Vec::with_capacity(page.count as usize);
         for i in 0..page.count {
             let start = (16 + i * 16) as usize;
-            let leaf_element: bolt::LeafPageElement =
-                bolt::LeafPageElement::try_from(data.get(start..data.len()).unwrap()).unwrap();
+            let leaf_element: bolt::LeafElementHeader =
+                bolt::LeafElementHeader::try_from(data.get(start..data.len()).unwrap()).unwrap();
 
             let key_start = 16 + i * 16 + (leaf_element.pos as u16);
             let key_end = key_start + (leaf_element.ksize as u16);
@@ -429,7 +404,7 @@ impl DB {
             let value = data
                 .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
                 .unwrap();
-            if leaf_element.flags == 0x01 {
+            if leaf_element.is_bucket() {
                 // the value is bucketHeaderSize, same as root + sequence
                 let bucket_header: bolt::BucketHeader = TryFrom::try_from(value).unwrap();
                 if bucket_header.is_inline() {
@@ -454,9 +429,10 @@ impl DB {
                     });
                 }
             } else {
+                let kv = boltypes::KeyValue::from_page(data, &leaf_element, i).unwrap();
                 leaf_elements.push(LeafElement::KeyValue(KeyValue {
-                    key: key.to_vec(),
-                    value: value.to_vec(),
+                    key: kv.key,
+                    value: kv.value,
                     depth: 0,
                 }));
             }
@@ -464,54 +440,13 @@ impl DB {
         leaf_elements
     }
 
-    fn read_meta_page(&mut self, data: &[u8], id: u64) -> Result<bolt::Meta, DatabaseError> {
-        let page: bolt::PageHeader = TryFrom::try_from(data)?;
-        if !page.flags.contains(bolt::PageFlag::MetaPageFlag) {
-            return Err(DatabaseError::InvalidPageType {
-                expect: bolt::PageFlag::MetaPageFlag.as_u16(),
-                got: page.flags.as_u16(),
-                id,
-            });
-        }
-
-        let actual_checksum = u64::from_be_bytes(
-            Fnv64::hash(&data[16..72])
-                .as_bytes()
-                .try_into()
-                .expect("calculate checksum successfully"),
-        );
-        let meta: bolt::Meta = TryFrom::try_from(data)?;
-        if meta.checksum != actual_checksum {
-            return Err(DatabaseError::InvalidPageChecksum {
-                expect: actual_checksum,
-                got: meta.checksum,
-                id,
-            });
-        }
-        if meta.magic != bolt::MAGIC_NUMBER {
-            return Err(DatabaseError::InvalidPageMagic {
-                expect: bolt::MAGIC_NUMBER,
-                got: meta.magic,
-                id,
-            });
-        }
-        if meta.version != bolt::DATAFILE_VERSION {
-            return Err(DatabaseError::InvalidPageVersion {
-                expect: bolt::DATAFILE_VERSION,
-                got: meta.version,
-                id,
-            });
-        }
-        Ok(meta)
-    }
-
     fn initialize(&mut self) -> Result<(), DatabaseError> {
         let data0 = self.read_page(0);
-        let meta0 = self.read_meta_page(&data0.data, 0)?;
+        let meta0 = data0.data.meta()?;
         self.meta0 = Some(meta0);
 
         let data1 = self.read_page(1);
-        let meta1 = self.read_meta_page(&data1.data, 1)?;
+        let meta1 = data1.data.meta()?;
         self.meta1 = Some(meta1);
 
         if self.meta0.is_none() && self.meta1.is_none() {
@@ -569,7 +504,7 @@ impl DB {
                 let r = branch_elements
                     .binary_search_by_key(&key.as_bytes(), |elem| elem.key.as_slice());
                 let index = r.unwrap_or_else(|idx| if idx > 0 { idx - 1 } else { 0 });
-                self.get_key_value_inner(buckets, key, branch_elements[index].pgid)
+                self.get_key_value_inner(buckets, key, branch_elements[index].pgid.into())
             }
             Element::Leaf(leaf_elements) => {
                 for leaf_item in leaf_elements {
@@ -661,7 +596,7 @@ impl Iterator for PageIterator {
                 .inner
                 .lock()
                 .unwrap()
-                .read_freelist(&data.data, page.count);
+                .read_freelist(data.data.as_slice(), page.count);
             for &i in &freelist {
                 // See
                 // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
@@ -689,7 +624,7 @@ impl Iterator for PageIterator {
                 for branch_item in branch_elements {
                     self.stack.push(PageIterItem {
                         parent_page_id: Some(item.page_id),
-                        page_id: branch_item.pgid,
+                        page_id: branch_item.pgid.into(),
                         typ: PageType::DataBranch,
                     });
                 }

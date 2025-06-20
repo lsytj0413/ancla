@@ -31,7 +31,6 @@ name = "ancla"
 version = "0.1.0"
 dependencies = [
  "boltypes",
- "fnv_rs",
  "serde",
  "serde_json",
  "thiserror 2.0.0",
@@ -178,6 +177,7 @@ version = "0.1.0"
 dependencies = [
  "binrw",
  "bitflags",
+ "fnv_rs",
  "serde",
  "serde_json",
  "thiserror 2.0.0",
