@@ -154,7 +154,7 @@ struct Page {
 
 enum Element {
     Branch(Vec<boltypes::BranchElement>),
-    Leaf(Vec<LeafElement>),
+    Leaf(Vec<boltypes::LeafElement>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -195,20 +195,6 @@ pub enum PageType {
     DataBranch,
     Freelist,
     Free,
-}
-
-#[derive(Debug, Clone)]
-enum LeafElement {
-    Bucket {
-        name: Vec<u8>,
-        pgid: u64,
-    },
-    InlineBucket {
-        name: Vec<u8>,
-        pgid: u64,
-        items: Vec<KeyValue>,
-    },
-    KeyValue(KeyValue),
 }
 
 #[derive(Debug, Clone)]
@@ -266,9 +252,9 @@ impl Iterator for DbItemIterator {
                         let elem = leaf_elements[item.index].clone();
                         item.index += 1;
                         match elem {
-                            LeafElement::Bucket { name, pgid } => {
+                            boltypes::LeafElement::Bucket { name, pgid } => {
                                 self.stack.push(IterItem {
-                                    node: ItemNode::Page(From::from(pgid)),
+                                    node: ItemNode::Page(pgid),
                                     index: 0,
                                     depth: Some(depth),
                                     parent_bucket: parent_bucket.clone(),
@@ -280,15 +266,24 @@ impl Iterator for DbItemIterator {
                                         .as_ref()
                                         .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: false,
-                                    page_id: pgid,
+                                    page_id: Into::<u64>::into(pgid),
                                     name,
                                     depth,
                                 })));
                             }
-                            LeafElement::InlineBucket { name, pgid, items } => {
+                            boltypes::LeafElement::InlineBucket { name, pgid, items } => {
                                 self.stack.push(IterItem {
                                     parent_bucket: parent_bucket.clone(),
-                                    node: ItemNode::Elements(items),
+                                    node: ItemNode::Elements(
+                                        items
+                                            .iter()
+                                            .map(|x| KeyValue {
+                                                key: x.key.clone(),
+                                                value: x.value.clone(),
+                                                depth: 0,
+                                            })
+                                            .collect(),
+                                    ),
                                     index: 0,
                                     depth: Some(depth),
                                 });
@@ -298,12 +293,12 @@ impl Iterator for DbItemIterator {
                                         .as_ref()
                                         .map_or_else(Vec::new, |bucket| bucket.name.clone()),
                                     is_inline: true,
-                                    page_id: pgid,
+                                    page_id: Into::<u64>::into(pgid),
                                     name,
                                     depth,
                                 })));
                             }
-                            LeafElement::KeyValue(kv) => {
+                            boltypes::LeafElement::KeyValue(kv) => {
                                 return Some(Ok(DbItem::KeyValue(KeyValue {
                                     key: kv.key,
                                     value: kv.value,
@@ -362,7 +357,7 @@ impl DB {
         let (typ, elem) = if page.flags.is_leaf_page() {
             (
                 PageType::DataLeaf,
-                Some(Element::Leaf(self.read_page_leaf_elements(data.as_slice()))),
+                Some(Element::Leaf(data.leaf_elements())),
             )
         } else if page.flags.is_branch_page() {
             (
@@ -387,57 +382,6 @@ impl DB {
         self.page_datas
             .insert(From::from(page_id), Arc::clone(&data));
         Arc::clone(&data)
-    }
-
-    #[allow(clippy::only_used_in_recursion)]
-    fn read_page_leaf_elements(&mut self, data: &[u8]) -> Vec<LeafElement> {
-        let page: bolt::PageHeader = TryFrom::try_from(data).unwrap();
-        let mut leaf_elements: Vec<LeafElement> = Vec::with_capacity(page.count as usize);
-        for i in 0..page.count {
-            let start = (16 + i * 16) as usize;
-            let leaf_element: bolt::LeafElementHeader =
-                bolt::LeafElementHeader::try_from(data.get(start..data.len()).unwrap()).unwrap();
-
-            let key_start = 16 + i * 16 + (leaf_element.pos as u16);
-            let key_end = key_start + (leaf_element.ksize as u16);
-            let key = data.get((key_start as usize)..(key_end as usize)).unwrap();
-            let value = data
-                .get((key_end as usize)..((key_end + leaf_element.vsize as u16) as usize))
-                .unwrap();
-            if leaf_element.is_bucket() {
-                // the value is bucketHeaderSize, same as root + sequence
-                let bucket_header: bolt::BucketHeader = TryFrom::try_from(value).unwrap();
-                if bucket_header.is_inline() {
-                    // It's a inline bucket, skip bucketHeaderSize, it's root + sequence
-                    let page_leaf_elements = self
-                        .read_page_leaf_elements(value.get(bolt::BUCKET_HEADER_SIZE..).unwrap());
-                    leaf_elements.push(LeafElement::InlineBucket {
-                        name: key.to_vec(),
-                        pgid: bucket_header.root.into(),
-                        items: page_leaf_elements
-                            .into_iter()
-                            .map(|x| match x {
-                                LeafElement::KeyValue(kv) => kv,
-                                _ => panic!("unreachable"),
-                            })
-                            .collect(),
-                    });
-                } else {
-                    leaf_elements.push(LeafElement::Bucket {
-                        name: key.to_vec(),
-                        pgid: bucket_header.root.into(),
-                    });
-                }
-            } else {
-                let kv = boltypes::KeyValue::from_page(data, &leaf_element, i).unwrap();
-                leaf_elements.push(LeafElement::KeyValue(KeyValue {
-                    key: kv.key,
-                    value: kv.value,
-                    depth: 0,
-                }));
-            }
-        }
-        leaf_elements
     }
 
     fn initialize(&mut self) -> Result<(), DatabaseError> {
@@ -509,21 +453,29 @@ impl DB {
             Element::Leaf(leaf_elements) => {
                 for leaf_item in leaf_elements {
                     match leaf_item {
-                        LeafElement::KeyValue(kv) => {
+                        boltypes::LeafElement::KeyValue(kv) => {
                             if kv.key == key.as_bytes() && buckets.is_empty() {
-                                return Some(kv.clone());
+                                return Some(KeyValue {
+                                    key: kv.key.clone(),
+                                    value: kv.value.clone(),
+                                    depth: 0,
+                                });
                             }
                         }
-                        LeafElement::Bucket { name, pgid } => {
+                        boltypes::LeafElement::Bucket { name, pgid } => {
                             if buckets.is_empty() {
                                 continue;
                             }
 
                             if name == buckets[0].as_bytes() {
-                                return self.get_key_value_inner(&buckets[1..], key, *pgid);
+                                return self.get_key_value_inner(
+                                    &buckets[1..],
+                                    key,
+                                    Into::<u64>::into(*pgid),
+                                );
                             }
                         }
-                        LeafElement::InlineBucket { name, items, .. } => {
+                        boltypes::LeafElement::InlineBucket { name, items, .. } => {
                             if buckets.len() != 1 {
                                 continue;
                             }
@@ -531,7 +483,11 @@ impl DB {
                             if name == buckets[0].as_bytes() {
                                 for item in items {
                                     if item.key == key.as_bytes() {
-                                        return Some(item.clone());
+                                        return Some(KeyValue {
+                                            key: item.key.clone(),
+                                            value: item.value.clone(),
+                                            depth: 0,
+                                        });
                                     }
                                 }
                             }
@@ -640,14 +596,14 @@ impl Iterator for PageIterator {
             }
             Element::Leaf(leaf_elements) => {
                 for leaf_item in leaf_elements {
-                    if let LeafElement::Bucket {
+                    if let boltypes::LeafElement::Bucket {
                         name: _,
                         pgid: pg_id,
                     } = leaf_item
                     {
                         self.stack.push(PageIterItem {
                             parent_page_id: Some(item.page_id),
-                            page_id: *pg_id,
+                            page_id: Into::<u64>::into(*pg_id),
                             typ: PageType::DataLeaf,
                         });
                     }

@@ -291,6 +291,27 @@ impl Page {
 
         elements
     }
+
+    pub fn leaf_elements(&self) -> Vec<LeafElement> {
+        let header = self.page_header();
+        assert!(
+            header.flags.is_leaf_page(),
+            "expect leaf page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        // TODO: remove unwrap
+        let mut elements: Vec<LeafElement> = Vec::with_capacity(header.count as usize);
+        for i in 0..header.count {
+            let start = PAGE_HEADER_SIZE + (i as usize) * LEAF_ELEMENT_HEADER_SIZE;
+            let elem_header: LeafElementHeader =
+                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+            elements.push(LeafElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+        }
+
+        elements
+    }
 }
 
 /// Meta represent the definition of meta page's structure.
@@ -618,6 +639,82 @@ impl KeyValue {
         Ok(KeyValue {
             key: page.get(key_start..key_end).unwrap().to_vec(),
             value: page.get(key_end..value_end).unwrap().to_vec(),
+        })
+    }
+}
+
+/// Represents element in leaf page.
+#[derive(Debug, Clone)]
+pub enum LeafElement {
+    Bucket {
+        name: Vec<u8>,
+        pgid: Pgid,
+    },
+    InlineBucket {
+        name: Vec<u8>,
+        pgid: Pgid,
+        items: Vec<KeyValue>,
+    },
+    KeyValue(KeyValue),
+}
+
+impl LeafElement {
+    /// Returns the elem in the page data.
+    ///
+    /// # Arguments
+    ///
+    /// * `page` - data of current page
+    /// * `elem` - leaf element header
+    /// * `idx` - idx of current leaf element header in this page, start from 0
+    ///
+    /// # Returns
+    ///
+    /// current leaf element
+    pub fn from_page(
+        page: &[u8],
+        elem: &LeafElementHeader,
+        idx: u16,
+    ) -> Result<LeafElement, Error> {
+        if !elem.is_bucket() {
+            return KeyValue::from_page(page, elem, idx).map(LeafElement::KeyValue);
+        }
+
+        let start = PAGE_HEADER_SIZE + (idx as usize) * LEAF_ELEMENT_HEADER_SIZE;
+        let key_start = start + elem.pos as usize;
+        let key_end = key_start + elem.ksize as usize;
+        let value_end = key_end + elem.vsize as usize;
+
+        if value_end > page.len() {
+            return Err(Error::TooSmallData {
+                expect: value_end,
+                got: page.len(),
+            });
+        }
+
+        // TODO: remove unwrap
+        let key = page.get(key_start..key_end).unwrap();
+        let value = page.get(key_end..value_end).unwrap();
+
+        let bucket_header: BucketHeader = TryFrom::try_from(value)?;
+        if !bucket_header.is_inline() {
+            return Ok(LeafElement::Bucket {
+                name: key.to_vec(),
+                pgid: bucket_header.root,
+            });
+        }
+
+        let inline_page = Page::new(value.get(BUCKET_HEADER_SIZE..).unwrap().to_vec());
+        Ok(LeafElement::InlineBucket {
+            name: key.to_vec(),
+            pgid: bucket_header.root, // TODO: consider use which pgid
+            items: inline_page
+                .leaf_elements()
+                .into_iter()
+                .map(|x| match x {
+                    LeafElement::KeyValue(kv) => kv,
+                    _ => panic!("unreachable"),
+                })
+                .collect(),
         })
     }
 }
