@@ -312,6 +312,35 @@ impl Page {
 
         elements
     }
+
+    pub fn free_pages(&self) -> Vec<Pgid> {
+        // TODO: remove unwrap
+        let header = self.page_header();
+        assert!(
+            header.flags.is_freelist_page(),
+            "expect freelist page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        let (count, offset) = if header.count != 0xFF {
+            (header.count as u64, 0)
+        } else {
+            (
+                utils::read_value::<u64>(self.0.as_slice(), PAGE_HEADER_SIZE),
+                8,
+            )
+        };
+
+        let mut freelist: Vec<Pgid> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            freelist.push(Pgid::from(utils::read_value::<u64>(
+                self.0.as_slice(),
+                (i as usize) * 8 + PAGE_HEADER_SIZE + offset,
+            )));
+        }
+        freelist
+    }
 }
 
 /// Meta represent the definition of meta page's structure.

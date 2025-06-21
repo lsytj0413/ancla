@@ -22,6 +22,7 @@
 
 use crate::errors::DatabaseError;
 use boltypes as bolt;
+use serde::{Deserialize, Serialize};
 use std::ops::IndexMut;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -157,13 +158,14 @@ enum Element {
     Leaf(Vec<boltypes::LeafElement>),
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PageInfo {
     pub id: u64,
     pub typ: PageType,
     pub overflow: u64,
     pub capacity: u64,
     pub used: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_page_id: Option<u64>,
 }
 
@@ -188,7 +190,7 @@ pub struct Bucket {
     pub depth: u64,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PageType {
     Meta,
     DataLeaf,
@@ -418,23 +420,6 @@ impl DB {
         self.meta1.unwrap()
     }
 
-    fn read_page_u64(&mut self, page: &[u8], offset: u16) -> u64 {
-        let ptr: *const u8 = page.as_ptr();
-        unsafe {
-            let offset_ptr = ptr.offset(offset as isize);
-            let value_ptr = std::slice::from_raw_parts(offset_ptr, 8);
-            u64::from_le_bytes(value_ptr.try_into().unwrap())
-        }
-    }
-
-    fn read_freelist(&mut self, page: &[u8], count: u16) -> Vec<u64> {
-        let mut freelist: Vec<u64> = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            freelist.push(self.read_page_u64(page, i * 8 + 16));
-        }
-        freelist
-    }
-
     fn get_key_value_inner(
         &mut self,
         buckets: &[String],
@@ -547,19 +532,14 @@ impl Iterator for PageIterator {
             });
         } else if data.typ == PageType::Freelist {
             let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
-            let freelist = self
-                .db
-                .inner
-                .lock()
-                .unwrap()
-                .read_freelist(data.data.as_slice(), page.count);
+            let freelist = data.data.free_pages();
             for &i in &freelist {
                 // See
                 // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
                 // 2. https://doc.rust-lang.org/reference/expressions/loop-expr.html#iterator-loops
                 self.stack.push(PageIterItem {
                     parent_page_id: None,
-                    page_id: i,
+                    page_id: i.into(),
                     typ: PageType::Free,
                 });
             }
@@ -1007,5 +987,35 @@ mod tests {
         }
 
         assert_eq!(result.lock().unwrap().as_slice(), vec![80, 396, 1385]);
+    }
+
+    #[test]
+    fn test_pages() {
+        let root_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let db = DBWrapper::open(
+            AnclaOptions::builder()
+                .db_path(
+                    root_dir
+                        .join("testdata")
+                        .join("data.db")
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                )
+                .build(),
+        )
+        .expect("open db successfully");
+
+        let actual_pages: Vec<PageInfo> = db.iter_pages().collect();
+
+        let content =
+            fs::read_to_string(format!("{}/testdata/page.json", root_dir.to_str().unwrap()))
+                .expect("Unable to read file");
+        let expect_pages: Vec<PageInfo> = serde_json::from_str(&content).unwrap();
+        assert_eq!(actual_pages, expect_pages);
     }
 }

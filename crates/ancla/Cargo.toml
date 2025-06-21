@@ -19,7 +19,7 @@ binrw = ["boltypes/binrw"]
 thiserror = "2.0.0"
 typed-builder = "0.20.0"
 boltypes = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true}
-serde = { workspace = true }
