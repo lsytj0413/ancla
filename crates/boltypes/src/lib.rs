@@ -55,10 +55,35 @@ mod utils {
 
     #[allow(private_bounds)]
     pub(crate) fn read_value<T: ByteReadMarker>(data: &[u8], offset: usize) -> T {
+        assert!(
+            (data.len() - offset) >= std::mem::size_of::<T>(),
+            "data didn't have enough length: expect atleast {}, got {}",
+            std::mem::size_of::<T>(),
+            (data.len() - offset)
+        );
+
         let ptr: *const u8 = data.as_ptr();
         unsafe {
             let offset_ptr = ptr.add(offset) as *const T;
             offset_ptr.read_unaligned()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_read_value_u64_success() {
+            let data: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 0];
+            assert_eq!(read_value::<u64>(&data, 0), 1);
+        }
+
+        #[test]
+        #[should_panic(expected = "expect atleast 8, got 7")]
+        fn test_read_value_not_enough_data() {
+            let data: [u8; 7] = [1, 0, 0, 0, 0, 0, 0];
+            read_value::<u64>(&data, 0);
         }
     }
 }
