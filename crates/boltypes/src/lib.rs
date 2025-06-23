@@ -239,17 +239,49 @@ fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
 }
 
 #[derive(Debug, Clone)]
-pub struct Page(Vec<u8>);
+pub enum Page {
+    MetaPage(MetaPage),
+    FreelistPage(FreelistPage),
+    BranchPage(BranchPage),
+    LeafPage(LeafPage),
+}
 
 impl Page {
     pub fn new(data: Vec<u8>) -> Page {
-        Page(data)
+        let header: PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
+        if header.flags.is_meta_page() {
+            return Page::MetaPage(MetaPage(data));
+        } else if header.flags.is_freelist_page() {
+            return Page::FreelistPage(FreelistPage(data));
+        } else if header.flags.is_branch_page() {
+            return Page::BranchPage(BranchPage(data));
+        } else if header.flags.is_leaf_page() {
+            return Page::LeafPage(LeafPage(data));
+        }
+
+        unreachable!("unknown page flags")
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        self.0.as_slice()
+        match self {
+            Page::MetaPage(meta) => meta.0.as_slice(),
+            Page::FreelistPage(freelist) => freelist.0.as_slice(),
+            Page::BranchPage(branch) => branch.0.as_slice(),
+            Page::LeafPage(leaf) => leaf.0.as_slice(),
+        }
     }
 
+    pub fn page_header(&self) -> PageHeader {
+        // TODO: remove unwrap
+        let data = self.as_slice();
+        TryFrom::try_from(data).unwrap()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MetaPage(Vec<u8>);
+
+impl MetaPage {
     pub fn page_header(&self) -> PageHeader {
         // TODO: remove unwrap
         TryFrom::try_from(self.0.as_slice()).unwrap()
@@ -295,47 +327,15 @@ impl Page {
         }
         Ok(meta)
     }
+}
 
-    pub fn branch_elements(&self) -> Vec<BranchElement> {
-        let header = self.page_header();
-        assert!(
-            header.flags.is_branch_page(),
-            "expect branch page {} but got {}",
-            header.id,
-            header.flags
-        );
+#[derive(Debug, Clone)]
+pub struct FreelistPage(Vec<u8>);
 
+impl FreelistPage {
+    pub fn page_header(&self) -> PageHeader {
         // TODO: remove unwrap
-        let mut elements: Vec<BranchElement> = Vec::with_capacity(header.count as usize);
-        for i in 0..header.count {
-            let start = PAGE_HEADER_SIZE + (i as usize) * BRANCH_ELEMENT_HEADER_SIZE;
-            let elem_header: BranchElementHeader =
-                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-            elements.push(BranchElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
-        }
-
-        elements
-    }
-
-    pub fn leaf_elements(&self) -> Vec<LeafElement> {
-        let header = self.page_header();
-        assert!(
-            header.flags.is_leaf_page(),
-            "expect leaf page {} but got {}",
-            header.id,
-            header.flags
-        );
-
-        // TODO: remove unwrap
-        let mut elements: Vec<LeafElement> = Vec::with_capacity(header.count as usize);
-        for i in 0..header.count {
-            let start = PAGE_HEADER_SIZE + (i as usize) * LEAF_ELEMENT_HEADER_SIZE;
-            let elem_header: LeafElementHeader =
-                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-            elements.push(LeafElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
-        }
-
-        elements
+        TryFrom::try_from(self.0.as_slice()).unwrap()
     }
 
     pub fn free_pages(&self) -> Vec<Pgid> {
@@ -365,6 +365,68 @@ impl Page {
             )));
         }
         freelist
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchPage(Vec<u8>);
+
+impl BranchPage {
+    pub fn page_header(&self) -> PageHeader {
+        // TODO: remove unwrap
+        TryFrom::try_from(self.0.as_slice()).unwrap()
+    }
+
+    pub fn branch_elements(&self) -> Vec<BranchElement> {
+        let header = self.page_header();
+        assert!(
+            header.flags.is_branch_page(),
+            "expect branch page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        // TODO: remove unwrap
+        let mut elements: Vec<BranchElement> = Vec::with_capacity(header.count as usize);
+        for i in 0..header.count {
+            let start = PAGE_HEADER_SIZE + (i as usize) * BRANCH_ELEMENT_HEADER_SIZE;
+            let elem_header: BranchElementHeader =
+                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+            elements.push(BranchElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+        }
+
+        elements
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LeafPage(Vec<u8>);
+
+impl LeafPage {
+    pub fn page_header(&self) -> PageHeader {
+        // TODO: remove unwrap
+        TryFrom::try_from(self.0.as_slice()).unwrap()
+    }
+
+    pub fn leaf_elements(&self) -> Vec<LeafElement> {
+        let header = self.page_header();
+        assert!(
+            header.flags.is_leaf_page(),
+            "expect leaf page {} but got {}",
+            header.id,
+            header.flags
+        );
+
+        // TODO: remove unwrap
+        let mut elements: Vec<LeafElement> = Vec::with_capacity(header.count as usize);
+        for i in 0..header.count {
+            let start = PAGE_HEADER_SIZE + (i as usize) * LEAF_ELEMENT_HEADER_SIZE;
+            let elem_header: LeafElementHeader =
+                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+            elements.push(LeafElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+        }
+
+        elements
     }
 }
 
@@ -757,7 +819,7 @@ impl LeafElement {
             });
         }
 
-        let inline_page = Page::new(value.get(BUCKET_HEADER_SIZE..).unwrap().to_vec());
+        let inline_page = LeafPage(value.get(BUCKET_HEADER_SIZE..).unwrap().to_vec());
         Ok(LeafElement::InlineBucket {
             name: key.to_vec(),
             pgid: bucket_header.root, // TODO: consider use which pgid

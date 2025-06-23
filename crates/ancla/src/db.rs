@@ -356,22 +356,17 @@ impl DB {
         let data = self.read(page_id * 4096, data_len);
         let data = bolt::Page::new(data);
 
-        let (typ, elem) = if page.flags.is_leaf_page() {
-            (
+        let (typ, elem) = match &data {
+            boltypes::Page::MetaPage(_) => (PageType::Meta, None),
+            boltypes::Page::FreelistPage(_) => (PageType::Freelist, None),
+            boltypes::Page::LeafPage(leaf) => (
                 PageType::DataLeaf,
-                Some(Element::Leaf(data.leaf_elements())),
-            )
-        } else if page.flags.is_branch_page() {
-            (
+                Some(Element::Leaf(leaf.leaf_elements())),
+            ),
+            boltypes::Page::BranchPage(branch) => (
                 PageType::DataBranch,
-                Some(Element::Branch(data.branch_elements())),
-            )
-        } else if page.flags.is_meta_page() {
-            (PageType::Meta, None)
-        } else if page.flags.is_freelist_page() {
-            (PageType::Freelist, None)
-        } else {
-            unreachable!("unknown type")
+                Some(Element::Branch(branch.branch_elements())),
+            ),
         };
 
         let data = Arc::new(Page {
@@ -386,13 +381,20 @@ impl DB {
         Arc::clone(&data)
     }
 
+    // TODO: remove unwrap
     fn initialize(&mut self) -> Result<(), DatabaseError> {
         let data0 = self.read_page(0);
-        let meta0 = data0.data.meta()?;
+        let meta0 = match &data0.data {
+            boltypes::Page::MetaPage(meta) => meta.meta().unwrap(),
+            _ => unreachable!("wrong type of page 0"),
+        };
         self.meta0 = Some(meta0);
 
         let data1 = self.read_page(1);
-        let meta1 = data1.data.meta()?;
+        let meta1 = match &data1.data {
+            boltypes::Page::MetaPage(meta) => meta.meta().unwrap(),
+            _ => unreachable!("wrong type of page 1"),
+        };
         self.meta1 = Some(meta1);
 
         if self.meta0.is_none() && self.meta1.is_none() {
@@ -532,7 +534,10 @@ impl Iterator for PageIterator {
             });
         } else if data.typ == PageType::Freelist {
             let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
-            let freelist = data.data.free_pages();
+            let freelist = match &data.data {
+                boltypes::Page::FreelistPage(freelist) => freelist.free_pages(),
+                _ => unreachable!("must be freelist page"),
+            };
             for &i in &freelist {
                 // See
                 // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
