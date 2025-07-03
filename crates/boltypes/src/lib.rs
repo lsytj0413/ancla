@@ -839,55 +839,54 @@ impl LeafElement {
 mod tests {
     use super::*;
 
+    // Test that a valid byte slice can be successfully converted into a PageHeader.
+    // This ensures that the basic parsing of the page header from a byte slice is working correctly.
     #[test]
     fn test_page_try_from() {
-        let data: [u8; 16] = [
-            1, 0, 0, 0, 0, 0, 0, 0, // id
-            1, 0, // flags
-            0, 0, // count
-            1, 0, 0, 0, // overflow
-        ];
+        let mut data = [0; PAGE_HEADER_SIZE];
+        data[0..8].copy_from_slice(&1u64.to_le_bytes());
+        data[8..10].copy_from_slice(&PageFlag::BranchPageFlag.bits().to_le_bytes());
+        data[10..12].copy_from_slice(&0u16.to_le_bytes());
+        data[12..16].copy_from_slice(&1u32.to_le_bytes());
+
         let page = PageHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(page.id.0, 1);
-        assert_eq!(page.flags.as_u16(), 1);
+        assert_eq!(page.flags, PageFlag::BranchPageFlag);
         assert_eq!(page.count, 0);
         assert_eq!(page.overflow, 1);
     }
 
+    // Test that converting a byte slice that is too small results in an error.
+    // This is important to ensure that the system handles corrupted or incomplete data gracefully.
     #[test]
     fn test_page_try_from_too_small() {
-        let data: [u8; 15] = [
-            1, 0, 0, 0, 0, 0, 0, 0, // id
-            1, 0, // flags
-            0, 0, // count
-            1, 0, 0, // overflow
-        ];
+        let data: [u8; PAGE_HEADER_SIZE - 1] = [0; PAGE_HEADER_SIZE - 1];
         let result = PageHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
             Error::TooSmallData {
-                expect: 16,
-                got: 15
+                expect: PAGE_HEADER_SIZE,
+                got: PAGE_HEADER_SIZE - 1
             }
         );
     }
 
+    // Test that a valid byte slice can be successfully converted into a Meta struct.
+    // This test verifies that the metadata of the database is read correctly.
     #[test]
     fn test_meta_try_from() {
-        let data: [u8; 80] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // PageHeader
-            0xED, 0xDA, 0x0C, 0xED, // magic
-            2, 0, 0, 0, // version
-            1, 0, 0, 0, // page_size
-            0, 0, 0, 0, // _flag
-            1, 0, 0, 0, 0, 0, 0, 0, // root_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // root_sequence
-            1, 0, 0, 0, 0, 0, 0, 0, // freelist_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // max_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // txid
-            b'a', 0, 0, 0, 0, 0, 0, 0, // checksum
-        ];
+        let mut data = [0; 80];
+        data[16..20].copy_from_slice(&MAGIC_NUMBER.to_le_bytes());
+        data[20..24].copy_from_slice(&DATAFILE_VERSION.to_le_bytes());
+        data[24..28].copy_from_slice(&1u32.to_le_bytes());
+        data[32..40].copy_from_slice(&1u64.to_le_bytes());
+        data[40..48].copy_from_slice(&1u64.to_le_bytes());
+        data[48..56].copy_from_slice(&1u64.to_le_bytes());
+        data[56..64].copy_from_slice(&1u64.to_le_bytes());
+        data[64..72].copy_from_slice(&1u64.to_le_bytes());
+        data[72..80].copy_from_slice(&97u64.to_le_bytes());
+
         let meta = Meta::try_from(&data as &[u8]).unwrap();
         assert_eq!(meta.magic, MAGIC_NUMBER);
         assert_eq!(meta.version, DATAFILE_VERSION);
@@ -900,21 +899,11 @@ mod tests {
         assert_eq!(meta.checksum, 97);
     }
 
+    // Test that converting a byte slice that is too small for a Meta struct results in an error.
+    // This ensures robustness against corrupted database files.
     #[test]
     fn test_meta_try_from_too_small() {
-        let data: [u8; 79] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // PageHeader
-            0xED, 0xDA, 0x0C, 0xED, // magic
-            2, 0, 0, 0, // version
-            1, 0, 0, 0, // page_size
-            0, 0, 0, 0, // _flag
-            1, 0, 0, 0, 0, 0, 0, 0, // root_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // root_sequence
-            1, 0, 0, 0, 0, 0, 0, 0, // freelist_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // max_pgid
-            1, 0, 0, 0, 0, 0, 0, 0, // txid
-            b'a', 0, 0, 0, 0, 0, 0, // checksum
-        ];
+        let data: [u8; 79] = [0; 79];
         let result = Meta::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
@@ -926,45 +915,47 @@ mod tests {
         );
     }
 
+    // Test that a valid byte slice can be converted into a BranchElementHeader.
+    // This is crucial for navigating the B-tree structure of the database.
     #[test]
     fn test_branch_page_element_try_from() {
-        let data: [u8; 16] = [
-            1, 0, 0, 0, // pos
-            2, 0, 0, 0, // ksize
-            1, 0, 0, 0, 0, 0, 0, 0, // pgid
-        ];
+        let mut data = [0; BRANCH_ELEMENT_HEADER_SIZE];
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        data[4..8].copy_from_slice(&2u32.to_le_bytes());
+        data[8..16].copy_from_slice(&1u64.to_le_bytes());
+
         let element = BranchElementHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(element.pos, 1);
         assert_eq!(element.ksize, 2);
         assert_eq!(element.pgid.0, 1);
     }
 
+    // Test that converting a byte slice that is too small for a BranchElementHeader results in an error.
+    // This helps prevent panics when reading malformed branch pages.
     #[test]
     fn test_branch_page_element_try_from_too_small() {
-        let data: [u8; 15] = [
-            1, 0, 0, 0, // pos
-            2, 0, 0, 0, // ksize
-            1, 0, 0, 0, 0, 0, 0, // pgid
-        ];
+        let data: [u8; BRANCH_ELEMENT_HEADER_SIZE - 1] = [0; BRANCH_ELEMENT_HEADER_SIZE - 1];
         let result = BranchElementHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
             Error::TooSmallData {
-                expect: 16,
-                got: 15
+                expect: BRANCH_ELEMENT_HEADER_SIZE,
+                got: BRANCH_ELEMENT_HEADER_SIZE - 1
             }
         );
     }
 
+    // Test that a valid byte slice can be converted into a LeafElementHeader.
+    // This is essential for reading key/value pairs from leaf pages.
     #[test]
     fn test_leaf_page_element_try_from() {
-        let data: [u8; 16] = [
-            1, 0, 0, 0, // flags
-            2, 0, 0, 0, // pos
-            3, 0, 0, 0, // ksize
-            4, 0, 0, 0, // vsize
-        ];
+        let mut data = [0; LEAF_ELEMENT_HEADER_SIZE];
+        data[0..4].copy_from_slice(&1u32.to_le_bytes());
+        data[4..8].copy_from_slice(&2u32.to_le_bytes());
+        data[8..12].copy_from_slice(&3u32.to_le_bytes());
+        data[12..16].copy_from_slice(&4u32.to_le_bytes());
+
         let element = LeafElementHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(element.flags, 1);
         assert_eq!(element.pos, 2);
@@ -972,50 +963,350 @@ mod tests {
         assert_eq!(element.vsize, 4);
     }
 
+    // Test that converting a byte slice that is too small for a LeafElementHeader results in an error.
+    // This ensures the system can handle corrupted leaf pages.
     #[test]
     fn test_leaf_page_element_try_from_too_small() {
-        let data: [u8; 15] = [
-            1, 0, 0, 0, // flags
-            2, 0, 0, 0, // pos
-            3, 0, 0, 0, // ksize
-            4, 0, 0, // vsize
-        ];
+        let data: [u8; LEAF_ELEMENT_HEADER_SIZE - 1] = [0; LEAF_ELEMENT_HEADER_SIZE - 1];
         let result = LeafElementHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
             Error::TooSmallData {
-                expect: 16,
-                got: 15
+                expect: LEAF_ELEMENT_HEADER_SIZE,
+                got: LEAF_ELEMENT_HEADER_SIZE - 1
             }
         );
     }
 
+    // Test that a valid byte slice can be converted into a BucketHeader.
+    // This is important for reading nested bucket information.
     #[test]
     fn test_bucket_try_from() {
-        let data: [u8; 16] = [
-            1, 0, 0, 0, 0, 0, 0, 0, // root
-            2, 0, 0, 0, 0, 0, 0, 0, // sequence
-        ];
+        let mut data = [0; BUCKET_HEADER_SIZE];
+        data[0..8].copy_from_slice(&1u64.to_le_bytes());
+        data[8..16].copy_from_slice(&2u64.to_le_bytes());
+
         let bucket = BucketHeader::try_from(&data as &[u8]).unwrap();
         assert_eq!(bucket.root.0, 1);
         assert_eq!(bucket.sequence, 2);
     }
 
+    // Test that converting a byte slice that is too small for a BucketHeader results in an error.
+    // This protects against malformed bucket data.
     #[test]
     fn test_bucket_try_from_too_small() {
-        let data: [u8; 15] = [
-            1, 0, 0, 0, 0, 0, 0, 0, // root
-            2, 0, 0, 0, 0, 0, 0, // sequence
-        ];
+        let data: [u8; BUCKET_HEADER_SIZE - 1] = [0; BUCKET_HEADER_SIZE - 1];
         let result = BucketHeader::try_from(&data as &[u8]);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
             Error::TooSmallData {
-                expect: 16,
-                got: 15
+                expect: BUCKET_HEADER_SIZE,
+                got: BUCKET_HEADER_SIZE - 1
             }
         );
+    }
+
+    // Test the conversions and formatting for Pgid.
+    // This ensures that page identifiers are handled correctly throughout the system.
+    #[test]
+    fn test_pgid() {
+        let pgid: Pgid = 1u64.into();
+        assert_eq!(pgid.0, 1);
+        let id: u64 = pgid.into();
+        assert_eq!(id, 1);
+        assert_eq!(format!("{pgid}"), "1");
+    }
+
+    // Test the functionality of PageFlag.
+    // This verifies that page types can be correctly identified and manipulated.
+    #[test]
+    fn test_page_flag() {
+        let flag = PageFlag::BranchPageFlag;
+        assert_eq!(flag.as_u16(), 1);
+        assert!(flag.is_branch_page());
+        assert!(!flag.is_leaf_page());
+        assert!(!flag.is_meta_page());
+        assert!(!flag.is_freelist_page());
+        assert_eq!(format!("{flag:?}"), "PageFlag(BranchPageFlag)");
+    }
+
+    // Test the creation and basic properties of a Page.
+    // This ensures that pages can be created from raw data and their headers can be accessed.
+    #[test]
+    fn test_page() {
+        let mut data = vec![0; PAGE_HEADER_SIZE];
+        data[0..8].copy_from_slice(&1u64.to_le_bytes());
+        data[8..10].copy_from_slice(&PageFlag::BranchPageFlag.bits().to_le_bytes());
+
+        let page = Page::new(data.clone());
+        assert_eq!(page.as_slice(), &data);
+        let header = page.page_header();
+        assert_eq!(header.id.0, 1);
+        assert_eq!(header.flags, PageFlag::BranchPageFlag);
+    }
+
+    // Test the extraction of a KeyValue pair from a leaf page.
+    // This is a fundamental operation for retrieving data from the database.
+    #[test]
+    fn test_key_value_from_page() {
+        let mut data = vec![0; 100];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+
+        // LeafElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 8..elem_start + 12].copy_from_slice(&3u32.to_le_bytes()); // ksize
+        data[elem_start + 12..elem_start + 16].copy_from_slice(&5u32.to_le_bytes()); // vsize
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 3].copy_from_slice(b"key");
+        data[data_start + 3..data_start + 3 + 5].copy_from_slice(b"value");
+
+        let elem_header = LeafElementHeader::try_from(&data[elem_start..]).unwrap();
+        let kv = KeyValue::from_page(&data, &elem_header, 0).unwrap();
+        assert_eq!(kv.key, b"key");
+        assert_eq!(kv.value, b"value");
+    }
+
+    // Test the is_bucket method of LeafElementHeader.
+    // This is important for distinguishing between key/value pairs and nested buckets.
+    #[test]
+    fn test_leaf_element_header_is_bucket() {
+        let mut header = LeafElementHeader {
+            flags: 1,
+            pos: 0,
+            ksize: 0,
+            vsize: 0,
+        };
+        assert!(header.is_bucket());
+        header.flags = 0;
+        assert!(!header.is_bucket());
+    }
+
+    // Test the is_inline method of BucketHeader.
+    // This is used to determine if a bucket's data is stored directly in the leaf page.
+    #[test]
+    fn test_bucket_header_is_inline() {
+        let mut header = BucketHeader {
+            root: Pgid(0),
+            sequence: 0,
+        };
+        assert!(header.is_inline());
+        header.root = Pgid(1);
+        assert!(!header.is_inline());
+    }
+
+    // Test the parsing of a MetaPage and its contained Meta struct.
+    // This ensures that the database's global metadata can be correctly read and verified.
+    #[test]
+    fn test_meta_page() {
+        let mut data = vec![0; 128];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::MetaPageFlag.bits().to_le_bytes());
+
+        // Meta
+        let meta_start = PAGE_HEADER_SIZE;
+        data[meta_start..meta_start + 4].copy_from_slice(&MAGIC_NUMBER.to_le_bytes());
+        data[meta_start + 4..meta_start + 8].copy_from_slice(&DATAFILE_VERSION.to_le_bytes());
+        data[meta_start + 8..meta_start + 12].copy_from_slice(&4096u32.to_le_bytes());
+        data[meta_start + 16..meta_start + 24].copy_from_slice(&3u64.to_le_bytes()); // root_pgid
+        data[meta_start + 32..meta_start + 40].copy_from_slice(&4u64.to_le_bytes()); // freelist_pgid
+        data[meta_start + 40..meta_start + 48].copy_from_slice(&10u64.to_le_bytes()); // max_pgid
+        data[meta_start + 48..meta_start + 56].copy_from_slice(&100u64.to_le_bytes()); // txid
+
+        let checksum = u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
+        data[72..80].copy_from_slice(&checksum.to_le_bytes());
+
+        let page = MetaPage(data);
+        let header = page.page_header();
+        assert_eq!(header.flags, PageFlag::MetaPageFlag);
+
+        let meta = page.meta().unwrap();
+        assert_eq!(meta.magic, MAGIC_NUMBER);
+        assert_eq!(meta.version, DATAFILE_VERSION);
+        assert_eq!(meta.page_size, 4096);
+        assert_eq!(meta.root_pgid.0, 3);
+        assert_eq!(meta.freelist_pgid.0, 4);
+        assert_eq!(meta.max_pgid.0, 10);
+        assert_eq!(meta.txid, 100);
+        assert_eq!(meta.checksum, checksum);
+    }
+
+    // Test the parsing of a FreelistPage to extract the list of free page IDs.
+    // This is essential for the database to be able to reuse deallocated pages.
+    #[test]
+    fn test_freelist_page() {
+        let mut data = vec![0; 128];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::FreelistPageFlag.bits().to_le_bytes());
+        data[10..12].copy_from_slice(&3u16.to_le_bytes()); // count
+
+        // Page IDs
+        let pids_start = PAGE_HEADER_SIZE;
+        data[pids_start..pids_start + 8].copy_from_slice(&10u64.to_le_bytes());
+        data[pids_start + 8..pids_start + 16].copy_from_slice(&11u64.to_le_bytes());
+        data[pids_start + 16..pids_start + 24].copy_from_slice(&12u64.to_le_bytes());
+
+        let page = FreelistPage(data);
+        let header = page.page_header();
+        assert_eq!(header.flags, PageFlag::FreelistPageFlag);
+
+        let free_pages = page.free_pages();
+        assert_eq!(free_pages, vec![Pgid(10), Pgid(11), Pgid(12)]);
+    }
+
+    // Test the parsing of a BranchPage to extract its elements.
+    // This is a key part of traversing the B-tree structure.
+    #[test]
+    fn test_branch_page() {
+        let mut data = vec![0; 128];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::BranchPageFlag.bits().to_le_bytes());
+        data[10..12].copy_from_slice(&1u16.to_le_bytes()); // count
+
+        // BranchElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start..elem_start + 4].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&3u32.to_le_bytes()); // ksize
+        data[elem_start + 8..elem_start + 16].copy_from_slice(&5u64.to_le_bytes()); // pgid
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 3].copy_from_slice(b"key");
+
+        let page = BranchPage(data);
+        let header = page.page_header();
+        assert_eq!(header.flags, PageFlag::BranchPageFlag);
+
+        let elements = page.branch_elements();
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].key, b"key");
+        assert_eq!(elements[0].pgid.0, 5);
+    }
+
+    // Test the parsing of a LeafPage to extract its elements.
+    // This is fundamental for reading the actual data stored in the database.
+    #[test]
+    fn test_leaf_page() {
+        let mut data = vec![0; 128];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+        data[10..12].copy_from_slice(&1u16.to_le_bytes()); // count
+
+        // LeafElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 8..elem_start + 12].copy_from_slice(&3u32.to_le_bytes()); // ksize
+        data[elem_start + 12..elem_start + 16].copy_from_slice(&5u32.to_le_bytes()); // vsize
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 3].copy_from_slice(b"key");
+        data[data_start + 3..data_start + 3 + 5].copy_from_slice(b"value");
+
+        let page = LeafPage(data);
+        let header = page.page_header();
+        assert_eq!(header.flags, PageFlag::LeafPageFlag);
+
+        let elements = page.leaf_elements();
+        assert_eq!(elements.len(), 1);
+        match &elements[0] {
+            LeafElement::KeyValue(kv) => {
+                assert_eq!(kv.key, b"key");
+                assert_eq!(kv.value, b"value");
+            }
+            _ => panic!("unexpected element type"),
+        }
+    }
+
+    // Test the from_page method for BranchElement.
+    // This ensures that individual branch elements can be correctly parsed from a page.
+    #[test]
+    fn test_branch_element_from_page() {
+        let mut data = vec![0; 100];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::BranchPageFlag.bits().to_le_bytes());
+
+        // BranchElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start..elem_start + 4].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&3u32.to_le_bytes()); // ksize
+        data[elem_start + 8..elem_start + 16].copy_from_slice(&5u64.to_le_bytes()); // pgid
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 3].copy_from_slice(b"key");
+
+        let elem_header = BranchElementHeader::try_from(&data[elem_start..]).unwrap();
+        let element = BranchElement::from_page(&data, &elem_header, 0).unwrap();
+        assert_eq!(element.key, b"key");
+        assert_eq!(element.pgid.0, 5);
+    }
+
+    // Test the from_page method for a KeyValue LeafElement.
+    // This verifies that key-value pairs are correctly extracted from leaf pages.
+    #[test]
+    fn test_leaf_element_from_page_kv() {
+        let mut data = vec![0; 100];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+
+        // LeafElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 8..elem_start + 12].copy_from_slice(&3u32.to_le_bytes()); // ksize
+        data[elem_start + 12..elem_start + 16].copy_from_slice(&5u32.to_le_bytes()); // vsize
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 3].copy_from_slice(b"key");
+        data[data_start + 3..data_start + 3 + 5].copy_from_slice(b"value");
+
+        let elem_header = LeafElementHeader::try_from(&data[elem_start..]).unwrap();
+        let element = LeafElement::from_page(&data, &elem_header, 0).unwrap();
+        match element {
+            LeafElement::KeyValue(kv) => {
+                assert_eq!(kv.key, b"key");
+                assert_eq!(kv.value, b"value");
+            }
+            _ => panic!("unexpected element type"),
+        }
+    }
+
+    // Test the from_page method for a Bucket LeafElement.
+    // This ensures that nested buckets are correctly identified and parsed.
+    #[test]
+    fn test_leaf_element_from_page_bucket() {
+        let mut data = vec![0; 128];
+        // PageHeader
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+        data[10..12].copy_from_slice(&1u16.to_le_bytes()); // count
+
+        // LeafElementHeader
+        let elem_start = PAGE_HEADER_SIZE;
+        data[elem_start..elem_start + 4].copy_from_slice(&1u32.to_le_bytes()); // flags (bucket)
+        data[elem_start + 4..elem_start + 8].copy_from_slice(&16u32.to_le_bytes()); // pos
+        data[elem_start + 8..elem_start + 12].copy_from_slice(&4u32.to_le_bytes()); // ksize
+        data[elem_start + 12..elem_start + 16].copy_from_slice(&(BUCKET_HEADER_SIZE as u32).to_le_bytes()); // vsize (BucketHeader size)
+
+        // Data
+        let data_start = elem_start + 16;
+        data[data_start..data_start + 4].copy_from_slice(b"name");
+        // BucketHeader
+        data[data_start + 4..data_start + 4 + 8].copy_from_slice(&7u64.to_le_bytes()); // root pgid
+
+        let elem_header = LeafElementHeader::try_from(&data[elem_start..]).unwrap();
+        let element = LeafElement::from_page(&data, &elem_header, 0).unwrap();
+        match element {
+            LeafElement::Bucket { name, pgid } => {
+                assert_eq!(name, b"name");
+                assert_eq!(pgid.0, 7);
+            }
+            _ => panic!("unexpected element type"),
+        }
     }
 }

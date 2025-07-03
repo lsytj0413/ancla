@@ -38,7 +38,7 @@ pub fn run_get(
     args: &Get,
     common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    println!("{:?}", args);
+    println!("{args:?}");
 
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())

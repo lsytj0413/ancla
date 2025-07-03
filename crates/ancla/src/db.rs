@@ -339,7 +339,7 @@ impl DB {
         self.file.seek(io::SeekFrom::Start(start)).unwrap();
         let read_size = self.file.read(data.as_mut_slice()).unwrap();
         if read_size != size {
-            panic!("read {} bytes, expected {}", read_size, size);
+            panic!("read {read_size} bytes, expected {size}");
         }
         data
     }
@@ -706,19 +706,17 @@ mod tests {
         for (i, expect) in expect_buckets.iter().enumerate() {
             match iter.next() {
                 None => {
-                    panic!("want bucket at {} but got nothing under: {}", i, parent);
+                    panic!("want bucket at {i} but got nothing under: {parent}");
                 }
                 Some(Ok(actual)) => {
                     assert_eq!(
                         String::from_utf8(actual.name).unwrap(),
                         expect.name,
-                        "different child bucket name under: {}",
-                        parent
+                        "different child bucket name under: {parent}"
                     );
                     assert_eq!(
                         depth, actual.depth,
-                        "different child bucket depth under: {}",
-                        parent,
+                        "different child bucket depth under: {parent}",
                     );
 
                     #[allow(clippy::manual_filter_map)]
@@ -739,7 +737,7 @@ mod tests {
                         expect_child_buckets.as_slice(),
                     );
                 }
-                Some(Err(e)) => panic!("want item at {} but got err {} under: {}", i, e, parent),
+                Some(Err(e)) => panic!("want item at {i} but got err {e} under: {parent}"),
             }
         }
     }
@@ -781,7 +779,7 @@ mod tests {
         for (i, expect) in expect_items.iter().enumerate() {
             let n = iter.next();
             if n.is_none() {
-                panic!("want item at {} but got nothing under: {}", i, parent);
+                panic!("want item at {i} but got nothing under: {parent}");
             }
             let n = n.unwrap();
 
@@ -791,24 +789,20 @@ mod tests {
                         assert_eq!(
                             String::from_utf8(kv.key.clone()).unwrap(),
                             *key,
-                            "different key name under: {}",
-                            parent
+                            "different key name under: {parent}"
                         );
                         assert_eq!(
                             String::from_utf8(kv.value).unwrap(),
                             *value,
-                            "different key's value name under: {}, key: {}",
-                            parent,
-                            key
+                            "different key's value name under: {parent}, key: {key}"
                         );
                         assert_eq!(
                             depth, kv.depth,
-                            "different child bucket's item depth under: {}, key: {}",
-                            parent, key,
+                            "different child bucket's item depth under: {parent}, key: {key}",
                         );
                     }
                     _ => {
-                        panic!("want kv item at {} but got another under: {}", i, parent);
+                        panic!("want kv item at {i} but got another under: {parent}");
                     }
                 },
                 Item::Bucket { bucket } => match n {
@@ -816,13 +810,12 @@ mod tests {
                         assert_eq!(
                             String::from_utf8(actual.name).unwrap(),
                             bucket.name,
-                            "different child bucket name under: {}",
-                            parent
+                            "different child bucket name under: {parent}"
                         );
                         assert_eq!(
                             depth, actual.depth,
-                            "different child bucket depth under: {}, key: {}",
-                            parent, bucket.name
+                            "different child bucket depth under: {parent}, key: {}",
+                            bucket.name
                         );
 
                         assert_child_items_equal(
@@ -836,13 +829,12 @@ mod tests {
                         assert_eq!(
                             String::from_utf8(actual.name).unwrap(),
                             bucket.name,
-                            "different child bucket name under: {}",
-                            parent
+                            "different child bucket name under: {parent}"
                         );
                         assert_eq!(
                             depth, actual.depth,
-                            "different child bucket depth under: {}, key: {}",
-                            parent, bucket.name
+                            "different child bucket depth under: {parent}, key: {}",
+                            bucket.name
                         );
 
                         assert_child_items_equal(
@@ -854,8 +846,7 @@ mod tests {
                     }
                     _ => {
                         panic!(
-                            "want bucket item at {} but got another under: {}",
-                            i, parent
+                            "want bucket item at {i} but got another under: {parent}",
                         );
                     }
                 },
@@ -870,19 +861,18 @@ mod tests {
         for (i, expect) in expect_buckets.iter().enumerate() {
             match iter.next() {
                 None => {
-                    panic!("want item at {} but got nothing under: {}", i, parent);
+                    panic!("want item at {i} but got nothing under: {parent}");
                 }
                 Some(Ok(DbItem::Bucket(actual))) => {
                     assert_eq!(
                         String::from_utf8(actual.name).unwrap(),
                         expect.name,
-                        "different child bucket name under: {}",
-                        parent
+                        "different child bucket name under: {parent}"
                     );
                     assert_eq!(
                         depth, actual.depth,
-                        "different child bucket depth under: {}, key: {}",
-                        parent, expect.name
+                        "different child bucket depth under: {parent}, key: {}",
+                        expect.name
                     );
 
                     assert_child_items_equal(
@@ -896,13 +886,12 @@ mod tests {
                     assert_eq!(
                         String::from_utf8(actual.name.clone()).unwrap(),
                         expect.name,
-                        "different child bucket name under: {}",
-                        parent
+                        "different child bucket name under: {parent}"
                     );
                     assert_eq!(
                         depth, actual.depth,
-                        "different child bucket depth under: {}, key: {}",
-                        parent, expect.name,
+                        "different child bucket depth under: {parent}, key: {}",
+                        expect.name,
                     );
 
                     assert_child_items_equal(
@@ -913,9 +902,9 @@ mod tests {
                     );
                 }
                 Some(Ok(DbItem::KeyValue(_))) => {
-                    panic!("want bucket item at {} but got kvs: {}", i, parent);
+                    panic!("want bucket item at {i} but got kvs: {parent}");
                 }
-                Some(Err(e)) => panic!("want item at {} but got err {} under: {}", i, e, parent),
+                Some(Err(e)) => panic!("want item at {i} but got err {e} under: {parent}"),
             }
         }
     }
