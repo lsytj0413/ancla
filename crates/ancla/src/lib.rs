@@ -23,5 +23,5 @@
 mod db;
 mod errors;
 
-pub use db::{AnclaOptions, Bucket, DBWrapper, DbItem, Info, KeyValue, PageInfo};
+pub use db::{AnclaOptions, Bucket, DBWrapper, DbItem, Info, KeyValue, PageInfo, PageType};
 pub use errors::DatabaseError;

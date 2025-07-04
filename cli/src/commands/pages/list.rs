@@ -25,13 +25,13 @@ use clap::Parser;
 use cling::prelude::*;
 use comfy_table::Table;
 
-#[derive(Run, Parser, Collect, Clone)]
-#[cling(run = "run_pages")]
-pub struct PageCommand {}
+#[derive(Parser, Collect, Clone, Run)]
+#[cling(run = "run_list")]
+pub struct List {}
 
-pub fn run_pages(
+pub fn run_list(
     state: State<crate::cli_env::Env>,
-    _args: &PageCommand,
+    _args: &List,
     _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
     let mut pages: Vec<ancla::PageInfo> = state.0.db.iter_pages().collect();

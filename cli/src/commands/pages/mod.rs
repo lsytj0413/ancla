@@ -20,40 +20,18 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+
+use clap::Subcommand;
 use cling::prelude::*;
 
-
-#[derive(Run, Parser, Clone)]
-#[command(author, version = crate::build_info::version(), about)]
-#[cling(run = "init")]
-pub struct App {
-    #[clap(flatten)]
-    pub common_opts: crate::opts::CommonOpts,
-
-    #[clap(subcommand)]
-    pub cmd: Commands,
-}
-
-fn init(common_opts: &crate::opts::CommonOpts) -> Result<State<crate::cli_env::Env>> {
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-    Ok(State(crate::cli_env::Env { db }))
-}
+pub mod list;
+pub mod unreachable;
 
 #[derive(Run, Subcommand, Clone)]
-pub enum Commands {
-    /// List all buckets
-    Buckets(crate::commands::buckets::BucketsCommand),
-    /// Operations on pages
-    #[clap(subcommand)]
-    Pages(crate::commands::pages::Pages),
-    /// Show info about the database
-    Info(crate::commands::info::InfoCommand),
-
-    #[clap(subcommand)]
-    KV(crate::commands::kvs::Kvs),
+pub enum Pages {
+    /// List all pages
+    List(list::List),
+    /// Detect unreachable pages
+    Unreachable(unreachable::Unreachable),
 }
+
