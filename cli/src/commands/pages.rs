@@ -30,17 +30,11 @@ use comfy_table::Table;
 pub struct PageCommand {}
 
 pub fn run_pages(
-    _state: State<crate::cli_env::Env>,
+    state: State<crate::cli_env::Env>,
     _args: &PageCommand,
-    common_opts: &crate::opts::CommonOpts,
+    _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    // This function is just a placeholder for the actual implementation
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-
-    let mut pages: Vec<ancla::PageInfo> = db.iter_pages().collect();
+    let mut pages: Vec<ancla::PageInfo> = state.0.db.iter_pages().collect();
     pages.sort();
     let mut pages_table = Table::new();
     pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
@@ -61,7 +55,7 @@ pub fn run_pages(
             comfy_table::Cell::new(format!("{:?}", p.typ)),
             comfy_table::Cell::new(p.overflow),
             comfy_table::Cell::new(p.capacity),
-            comfy_table::Cell::new(p.used),
+            comfy_table::Cell::new(format!("{:?}", p.used)),
             comfy_table::Cell::new(format!("{:?}", p.parent_page_id)),
         ]);
     });

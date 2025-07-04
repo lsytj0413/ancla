@@ -24,6 +24,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use cling::prelude::*;
 
+
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about)]
 #[cling(run = "init")]
@@ -35,8 +36,12 @@ pub struct App {
     pub cmd: Commands,
 }
 
-fn init() -> Result<State<crate::cli_env::Env>> {
-    Ok(State(crate::cli_env::Env {}))
+fn init(common_opts: &crate::opts::CommonOpts) -> Result<State<crate::cli_env::Env>> {
+    let options = ancla::AnclaOptions::builder()
+        .db_path(common_opts.db.clone())
+        .build();
+    let db = ancla::DBWrapper::open(options)?;
+    Ok(State(crate::cli_env::Env { db }))
 }
 
 #[derive(Run, Subcommand, Clone)]

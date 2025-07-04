@@ -34,18 +34,13 @@ pub struct Get {
 }
 
 pub fn run_get(
-    _state: State<crate::cli_env::Env>,
+    state: State<crate::cli_env::Env>,
     args: &Get,
-    common_opts: &crate::opts::CommonOpts,
+    _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
     println!("{args:?}");
 
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-
-    let kv = db.get_key_value(&args.buckets, &args.key);
+    let kv = state.0.db.get_key_value(&args.buckets, &args.key);
     if let Some(kv) = kv {
         println!("Key: {:?}", String::from_utf8(kv.key));
         println!("Value: {:?}", String::from_utf8(kv.value));
