@@ -32,15 +32,11 @@ use std::iter::Peekable;
 pub struct BucketsCommand {}
 
 pub fn run_buckets(
-    _state: State<crate::cli_env::Env>,
+    state: State<crate::cli_env::Env>,
     _args: &BucketsCommand,
-    common_opts: &crate::opts::CommonOpts,
+    _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-    let buckets = iter_buckets(db);
+    let buckets = iter_buckets(state.0.db);
     print_buckets(&buckets);
 
     Ok(())

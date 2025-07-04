@@ -29,15 +29,11 @@ use cling::prelude::*;
 pub struct InfoCommand {}
 
 pub fn run_info(
-    _state: State<crate::cli_env::Env>,
+    state: State<crate::cli_env::Env>,
     _args: &InfoCommand,
-    common_opts: &crate::opts::CommonOpts,
+    _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-    let info = db.info();
+    let info = state.0.db.info();
     println!("Page Size: {:?}", info.page_size);
     Ok(())
 }
