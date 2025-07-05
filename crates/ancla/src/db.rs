@@ -531,7 +531,7 @@ impl Iterator for PageIterator {
                 typ: PageType::Meta,
                 overflow: data.overflow,
                 capacity: 4096,
-                used: 80,
+                used: data.data.used() as u64,
                 parent_page_id: None,
             });
         } else if data.typ == PageType::Freelist {
@@ -556,7 +556,7 @@ impl Iterator for PageIterator {
                 typ: PageType::Freelist,
                 overflow: page.overflow as u64,
                 capacity: 4096,
-                used: 16 + (page.count as u64 * 8),
+                used: data.data.used() as u64,
                 parent_page_id: None,
             });
         }
@@ -577,7 +577,7 @@ impl Iterator for PageIterator {
                     typ: PageType::DataBranch,
                     overflow: data.overflow,
                     capacity: 4096,
-                    used: 16 + (page.count as u64 * 12),
+                    used: data.data.used() as u64,
                     parent_page_id: item.parent_page_id,
                 })
             }
@@ -601,7 +601,7 @@ impl Iterator for PageIterator {
                     typ: PageType::DataLeaf,
                     overflow: page.overflow as u64,
                     capacity: 4096,
-                    used: 16 + (page.count as u64 * 12),
+                    used: data.data.used() as u64,
                     parent_page_id: item.parent_page_id,
                 })
             }
