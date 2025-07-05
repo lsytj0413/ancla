@@ -26,6 +26,7 @@ tokio = { version = "1.44.1", default-features = false, features = [
     "parking_lot",
 ] }
 ancla = { workspace = true }
+rayon = "1.10.0"
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [
