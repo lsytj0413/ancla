@@ -23,6 +23,7 @@
 use anyhow::Result;
 use clap::Parser;
 use cling::prelude::*;
+use rayon::prelude::*;
 
 #[derive(Parser, Collect, Clone, Run)]
 #[cling(run = "run_unreachable")]
@@ -41,61 +42,31 @@ pub fn run_unreachable(
         .map(|p| (p.id, p.typ))
         .collect();
 
-    // Wrap known_pages in an Arc for shared, immutable access across threads
-    let known_pages_arc = std::sync::Arc::new(known_pages);
-
-    // Determine the number of threads to use
-    let num_threads = std::thread::available_parallelism().map_or(1, |x| x.get());
-    let total_pages = max_pgid.into();
-    let chunk_size = (total_pages as f64 / num_threads as f64).ceil() as u64;
-
-    let mut handles = vec![];
-    let mut all_unreachable_pages = std::collections::HashSet::new();
-
-    for i in 0..num_threads {
-        let start = i as u64 * chunk_size;
-        let end = std::cmp::min(start + chunk_size, total_pages);
-
-        if start >= end {
-            continue; // Skip empty chunks
-        }
-
-        let known_pages_clone = std::sync::Arc::clone(&known_pages_arc);
-
-        let handle = std::thread::spawn(move || {
-            let mut local_unreachable_pages = std::collections::HashSet::new();
-            for page_id in start..end {
-                match known_pages_clone.get(&page_id) {
-                    Some(page_type) => {
-                        match page_type {
-                            ancla::PageType::Meta |
-                            ancla::PageType::Freelist |
-                            ancla::PageType::DataBranch |
-                            ancla::PageType::DataLeaf => {
-                                // These are reachable pages, do nothing
-                            },
-                            _ => {
-                                // Other page types (e.g., Free) are considered unreachable based on the definition
-                                local_unreachable_pages.insert(page_id);
-                            }
+    let all_unreachable_pages: std::collections::HashSet<u64> = (0..max_pgid.into())
+        .into_par_iter()
+        .filter_map(|page_id| {
+            match known_pages.get(&page_id) {
+                Some(page_type) => {
+                    match page_type {
+                        ancla::PageType::Meta |
+                        ancla::PageType::Freelist |
+                        ancla::PageType::DataBranch |
+                        ancla::PageType::DataLeaf => {
+                            None // These are reachable pages, do nothing
+                        },
+                        _ => {
+                            // Other page types (e.g., Free) are considered unreachable based on the definition
+                            Some(page_id)
                         }
-                    },
-                    None => {
-                        // If a page ID within the 0..max_pgid range is not in known_pages, it's unreachable
-                        local_unreachable_pages.insert(page_id);
                     }
+                },
+                None => {
+                    // If a page ID within the 0..max_pgid range is not in known_pages, it\'s unreachable
+                    Some(page_id)
                 }
             }
-            local_unreachable_pages
-        });
-        handles.push(handle);
-    }
-
-    // Collect results from all threads
-    for handle in handles {
-        let local_set = handle.join().map_err(|e| anyhow::anyhow!("Thread panicked: {:?}", e))?;
-        all_unreachable_pages.extend(local_set);
-    }
+        })
+        .collect();
 
     if all_unreachable_pages.is_empty() {
         println!("No unreachable pages found.");
