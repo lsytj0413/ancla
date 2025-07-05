@@ -36,35 +36,33 @@ pub fn run_unreachable(
 ) -> Result<()> {
     let db = &state.0.db;
 
-    let all_pages: HashSet<u64> = db.iter_pages().map(|p| p.id).collect();
-
-    let meta_page_ids: HashSet<u64> = db.iter_pages()
-        .filter(|p| p.typ == ancla::PageType::Meta)
-        .map(|p| p.id)
-        .collect();
-
-    let freelist_page_ids: HashSet<u64> = db.iter_pages()
-        .filter(|p| p.typ == ancla::PageType::Freelist)
-        .flat_map(|p| {
-            // This is a simplified approach. In a real scenario, you'd need to parse the freelist page
-            // to get the actual free page IDs. For now, we'll assume the PageInfo for Freelist
-            // pages contains the IDs directly or can be derived.
-            // A more robust solution would involve reading the freelist page content.
-            vec![p.id]
-        })
-        .collect();
-
-    let reachable_pages: HashSet<u64> = db.iter_pages()
-        .filter(|p| p.typ != ancla::PageType::Free && p.typ != ancla::PageType::Freelist)
-        .map(|p| p.id)
-        .collect();
-
     let mut unreachable_pages = HashSet::new();
-    for page_id in all_pages.iter() {
-        if !freelist_page_ids.contains(page_id) &&
-           !meta_page_ids.contains(page_id) &&
-           !reachable_pages.contains(page_id) {
-            unreachable_pages.insert(*page_id);
+    let max_pgid = db.info().max_pgid;
+
+    let known_pages: std::collections::HashMap<u64, ancla::PageType> = db.iter_pages()
+        .map(|p| (p.id, p.typ))
+        .collect();
+
+    for i in 0..max_pgid.into() {
+        match known_pages.get(&i) {
+            Some(page_type) => {
+                match page_type {
+                    ancla::PageType::Meta |
+                    ancla::PageType::Freelist |
+                    ancla::PageType::DataBranch |
+                    ancla::PageType::DataLeaf => {
+                        // These are reachable pages, do nothing
+                    },
+                    _ => {
+                        // Other page types (e.g., Free) are considered unreachable based on the definition
+                        unreachable_pages.insert(i);
+                    }
+                }
+            },
+            None => {
+                // If a page ID within the 0..max_pgid range is not in known_pages, it's unreachable
+                unreachable_pages.insert(i);
+            }
         }
     }
 
