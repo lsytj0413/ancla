@@ -125,6 +125,7 @@ impl DBWrapper {
 
         Info {
             page_size: meta.page_size,
+            max_pgid: meta.max_pgid,
         }
     }
 
@@ -489,6 +490,7 @@ impl DB {
 
 pub struct Info {
     pub page_size: u32,
+    pub max_pgid: bolt::Pgid,
 }
 
 struct PageIterator {

@@ -35,5 +35,6 @@ pub fn run_info(
 ) -> Result<()> {
     let info = state.0.db.info();
     println!("Page Size: {:?}", info.page_size);
+    println!("Max PGID: {:?}", info.max_pgid);
     Ok(())
 }
