@@ -23,7 +23,7 @@
 use anyhow::Result;
 use clap::Parser;
 use cling::prelude::*;
-use std::collections::HashSet;
+use rayon::prelude::*;
 
 #[derive(Parser, Collect, Clone, Run)]
 #[cling(run = "run_unreachable")]
@@ -36,40 +36,39 @@ pub fn run_unreachable(
 ) -> Result<()> {
     let db = &state.0.db;
 
-    let mut unreachable_pages = HashSet::new();
     let max_pgid = db.info().max_pgid;
 
     let known_pages: std::collections::HashMap<u64, ancla::PageType> = db.iter_pages()
         .map(|p| (p.id, p.typ))
         .collect();
 
-    for i in 0..max_pgid.into() {
-        match known_pages.get(&i) {
-            Some(page_type) => {
-                match page_type {
-                    ancla::PageType::Meta |
-                    ancla::PageType::Freelist |
-                    ancla::PageType::DataBranch |
-                    ancla::PageType::DataLeaf => {
-                        // These are reachable pages, do nothing
-                    },
-                    _ => {
-                        // Other page types (e.g., Free) are considered unreachable based on the definition
-                        unreachable_pages.insert(i);
+    let all_unreachable_pages: std::collections::HashSet<u64> = (0..max_pgid.into())
+        .into_par_iter()
+        .filter_map(|page_id| {
+            match known_pages.get(&page_id) {
+                Some(page_type) => {
+                    match page_type {
+                        ancla::PageType::Meta |
+                        ancla::PageType::Freelist |
+                        ancla::PageType::DataBranch |
+                        ancla::PageType::DataLeaf |
+                        ancla::PageType::Free => { // Add Free here
+                            None // These are reachable pages, do nothing
+                        }
                     }
+                },
+                None => {
+                    // If a page ID within the 0..max_pgid range is not in known_pages, it\'s unreachable
+                    Some(page_id)
                 }
-            },
-            None => {
-                // If a page ID within the 0..max_pgid range is not in known_pages, it's unreachable
-                unreachable_pages.insert(i);
             }
-        }
-    }
+        })
+        .collect();
 
-    if unreachable_pages.is_empty() {
+    if all_unreachable_pages.is_empty() {
         println!("No unreachable pages found.");
     } else {
-        println!("Unreachable pages: {unreachable_pages:?}");
+        println!("Unreachable pages: {all_unreachable_pages:?}");
     }
 
     Ok(())
