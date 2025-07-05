@@ -51,12 +51,9 @@ pub fn run_unreachable(
                         ancla::PageType::Meta |
                         ancla::PageType::Freelist |
                         ancla::PageType::DataBranch |
-                        ancla::PageType::DataLeaf => {
+                        ancla::PageType::DataLeaf |
+                        ancla::PageType::Free => { // Add Free here
                             None // These are reachable pages, do nothing
-                        },
-                        _ => {
-                            // Other page types (e.g., Free) are considered unreachable based on the definition
-                            Some(page_id)
                         }
                     }
                 },
