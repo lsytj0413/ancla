@@ -276,6 +276,15 @@ impl Page {
         let data = self.as_slice();
         TryFrom::try_from(data).unwrap()
     }
+
+    pub fn used(&self) -> usize {
+        match self {
+            Page::MetaPage(meta) => meta.used(),
+            Page::FreelistPage(freelist) => freelist.used(),
+            Page::BranchPage(branch) => branch.used(),
+            Page::LeafPage(leaf) => leaf.used(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +294,11 @@ impl MetaPage {
     pub fn page_header(&self) -> PageHeader {
         // TODO: remove unwrap
         TryFrom::try_from(self.0.as_slice()).unwrap()
+    }
+
+    pub fn used(&self) -> usize {
+        // Meta page used size is PAGE_HEADER_SIZE + size of Meta struct
+        PAGE_HEADER_SIZE + std::mem::size_of::<Meta>()
     }
 
     pub fn meta(&self) -> Result<Meta, Error> {
@@ -338,6 +352,19 @@ impl FreelistPage {
         TryFrom::try_from(self.0.as_slice()).unwrap()
     }
 
+    pub fn used(&self) -> usize {
+        let header = self.page_header();
+        let (count, offset) = if header.count != 0xFFFF {
+            (header.count as u64, 0)
+        } else {
+            (
+                utils::read_value::<u64>(self.0.as_slice(), PAGE_HEADER_SIZE),
+                8,
+            )
+        };
+        PAGE_HEADER_SIZE + offset + (count as usize) * std::mem::size_of::<Pgid>()
+    }
+
     pub fn free_pages(&self) -> Vec<Pgid> {
         // TODO: remove unwrap
         let header = self.page_header();
@@ -377,6 +404,19 @@ impl BranchPage {
         TryFrom::try_from(self.0.as_slice()).unwrap()
     }
 
+    pub fn used(&self) -> usize {
+        let header = self.page_header();
+        if header.count == 0 {
+            return PAGE_HEADER_SIZE;
+        }
+
+        let last_element_idx = header.count - 1;
+        let start = PAGE_HEADER_SIZE + (last_element_idx as usize) * BRANCH_ELEMENT_HEADER_SIZE;
+        let elem_header: BranchElementHeader =
+            TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+        start + elem_header.pos as usize + elem_header.ksize as usize
+    }
+
     pub fn branch_elements(&self) -> Vec<BranchElement> {
         let header = self.page_header();
         assert!(
@@ -406,6 +446,19 @@ impl LeafPage {
     pub fn page_header(&self) -> PageHeader {
         // TODO: remove unwrap
         TryFrom::try_from(self.0.as_slice()).unwrap()
+    }
+
+    pub fn used(&self) -> usize {
+        let header = self.page_header();
+        if header.count == 0 {
+            return PAGE_HEADER_SIZE;
+        }
+
+        let last_element_idx = header.count - 1;
+        let start = PAGE_HEADER_SIZE + (last_element_idx as usize) * LEAF_ELEMENT_HEADER_SIZE;
+        let elem_header: LeafElementHeader =
+            TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
+        start + elem_header.pos as usize + elem_header.ksize as usize + elem_header.vsize as usize
     }
 
     pub fn leaf_elements(&self) -> Vec<LeafElement> {
