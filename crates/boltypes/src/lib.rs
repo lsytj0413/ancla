@@ -285,6 +285,11 @@ impl Page {
             Page::LeafPage(leaf) => leaf.used(),
         }
     }
+
+    pub fn capacity(&self, page_size: u32) -> usize {
+        let header = self.page_header();
+        ((1 + header.overflow) * page_size) as usize
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1361,5 +1366,23 @@ mod tests {
             }
             _ => panic!("unexpected element type"),
         }
+    }
+
+    #[test]
+    fn test_page_capacity() {
+        let page_size = 4096;
+        let mut data = vec![0; page_size];
+        // PageHeader with overflow = 1
+        data[12..16].copy_from_slice(&1u32.to_le_bytes());
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+        let page = Page::new(data);
+        assert_eq!(page.capacity(page_size as u32), (1 + 1) * page_size);
+
+        let mut data = vec![0; page_size];
+        // PageHeader with overflow = 0
+        data[12..16].copy_from_slice(&0u32.to_le_bytes());
+        data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
+        let page = Page::new(data);
+        assert_eq!(page.capacity(page_size as u32), page_size);
     }
 }

@@ -83,7 +83,7 @@
     "id": 13,
     "typ": "DataLeaf",
     "overflow": 1,
-    "capacity": 4096,
+    "capacity": 8192,
     "used": 6041,
     "parent_page_id": 26
   },
