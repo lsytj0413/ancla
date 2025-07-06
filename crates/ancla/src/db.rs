@@ -530,7 +530,7 @@ impl Iterator for PageIterator {
                 id: data.id,
                 typ: PageType::Meta,
                 overflow: data.overflow,
-                capacity: 4096,
+                capacity: data.data.capacity(self.db.info().page_size) as u64,
                 used: data.data.used() as u64,
                 parent_page_id: None,
             });
@@ -555,7 +555,7 @@ impl Iterator for PageIterator {
                 id: item.page_id,
                 typ: PageType::Freelist,
                 overflow: page.overflow as u64,
-                capacity: 4096,
+                capacity: data.data.capacity(self.db.info().page_size) as u64,
                 used: data.data.used() as u64,
                 parent_page_id: None,
             });
@@ -576,7 +576,7 @@ impl Iterator for PageIterator {
                     id: item.page_id,
                     typ: PageType::DataBranch,
                     overflow: data.overflow,
-                    capacity: 4096,
+                    capacity: data.data.capacity(self.db.info().page_size) as u64,
                     used: data.data.used() as u64,
                     parent_page_id: item.parent_page_id,
                 })
@@ -600,7 +600,7 @@ impl Iterator for PageIterator {
                     id: item.page_id,
                     typ: PageType::DataLeaf,
                     overflow: page.overflow as u64,
-                    capacity: 4096,
+                    capacity: data.data.capacity(self.db.info().page_size) as u64,
                     used: data.data.used() as u64,
                     parent_page_id: item.parent_page_id,
                 })
