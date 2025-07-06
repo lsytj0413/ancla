@@ -20,9 +20,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use std::sync::Arc;
 use thiserror::Error;
 
-#[derive(Error, Debug, Eq, PartialEq, Clone)]
+#[derive(Error, Debug, Clone)]
 pub enum DatabaseError {
     #[error("{0}")]
     TooSmallData(#[from] boltypes::Error),
@@ -47,4 +48,7 @@ pub enum DatabaseError {
 
     #[error("file's meta is invalid")]
     InvalidMeta,
+
+    #[error("IO error: {0}")]
+    Io(#[from] Arc<std::io::Error>),
 }

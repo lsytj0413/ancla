@@ -29,16 +29,10 @@ use cling::prelude::*;
 pub struct List {}
 
 pub fn run_list(
-    _state: State<crate::cli_env::Env>,
+    state: State<crate::cli_env::Env>,
     _args: &List,
-    common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    let options = ancla::AnclaOptions::builder()
-        .db_path(common_opts.db.clone())
-        .build();
-    let db = ancla::DBWrapper::open(options)?;
-
-    let iter = db.iter_items();
+    let iter = state.0.db.iter_items();
     for item in iter {
         match item {
             Ok(ancla::DbItem::KeyValue(kv)) => {

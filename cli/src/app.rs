@@ -39,6 +39,7 @@ pub struct App {
 fn init(common_opts: &crate::opts::CommonOpts) -> Result<State<crate::cli_env::Env>> {
     let options = ancla::AnclaOptions::builder()
         .db_path(common_opts.db.clone())
+        .page_size(common_opts.page_size)
         .build();
     let db = ancla::DBWrapper::open(options)?;
     Ok(State(crate::cli_env::Env { db }))
