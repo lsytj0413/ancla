@@ -31,6 +31,9 @@ pub struct CommonOpts {
 
     #[arg(long)]
     pub(crate) db: String,
+
+    #[arg(long)]
+    pub(crate) page_size: Option<u32>,
 }
 
 #[derive(Clone, Default)]

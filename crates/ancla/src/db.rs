@@ -57,7 +57,16 @@ impl DBWrapper {
             page_datas: BTreeMap::new(),
             meta0: None,
             meta1: None,
+            page_size: 0,
         };
+
+        if let Some(page_size) = ancla_options.page_size {
+            db.page_size = page_size;
+        } else {
+            // Determine page_size before full initialization
+            db.page_size = db.determine_page_size()?;
+        }
+
         db.initialize()?;
         Ok(Self {
             inner: Arc::new(Mutex::new(db)),
@@ -144,6 +153,7 @@ pub struct DB {
     page_datas: BTreeMap<boltypes::Pgid, Arc<Page>>,
     meta0: Option<boltypes::Meta>,
     meta1: Option<boltypes::Meta>,
+    page_size: u32,
 }
 
 struct Page {
@@ -350,11 +360,11 @@ impl DB {
             return Arc::clone(data);
         }
 
-        let data = self.read(page_id * 4096, boltypes::PAGE_HEADER_SIZE);
+        let data = self.read(page_id * self.page_size as u64, boltypes::PAGE_HEADER_SIZE);
         let page: boltypes::PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
 
-        let data_len = 4096 * (page.overflow + 1) as usize;
-        let data = self.read(page_id * 4096, data_len);
+        let data_len = self.page_size as usize * (page.overflow + 1) as usize;
+        let data = self.read(page_id * self.page_size as u64, data_len);
         let data = bolt::Page::new(data);
 
         let (typ, elem) = match &data {
@@ -421,6 +431,73 @@ impl DB {
         }
 
         self.meta1.unwrap()
+    }
+
+    fn determine_page_size(&mut self) -> Result<u32, DatabaseError> {
+        // Phase 1: Attempt to read and validate meta0 (fixed position)
+        const META_READ_LEN: usize =
+            boltypes::PAGE_HEADER_SIZE + std::mem::size_of::<boltypes::Meta>();
+        let mut buf_meta0 = vec![0; META_READ_LEN];
+
+        // Attempt to read meta0 from the beginning of the file
+        self.file
+            .seek(io::SeekFrom::Start(0))
+            .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
+        let read_bytes_meta0 = self
+            .file
+            .read(&mut buf_meta0)
+            .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
+
+        if read_bytes_meta0 >= META_READ_LEN {
+            let meta_page_candidate = boltypes::Page::new(buf_meta0);
+            if let boltypes::Page::MetaPage(meta_page) = meta_page_candidate {
+                if let Ok(valid_meta) = meta_page.meta() {
+                    return Ok(valid_meta.page_size);
+                }
+            }
+        }
+
+        // Phase 2: If meta0 is invalid, search the entire file for a valid metadata page
+        self.search_for_meta_page()
+    }
+
+    fn search_for_meta_page(&mut self) -> Result<u32, DatabaseError> {
+        const META_READ_LEN: usize =
+            boltypes::PAGE_HEADER_SIZE + std::mem::size_of::<boltypes::Meta>();
+        const MAX_PAGE_SIZE: u32 = 1024 * 1024; // 1MB
+
+        // Iterate through powers of 2 for page_size, from 512 to 1MB
+        for page_size_candidate in (9..=20).map(|i| 1 << i) {
+            if !(512..=MAX_PAGE_SIZE).contains(&page_size_candidate) {
+                continue;
+            }
+
+            let meta_page_offset = page_size_candidate as u64;
+            let mut buf = vec![0; META_READ_LEN];
+
+            // Attempt to read the second meta page (meta1)
+            self.file
+                .seek(io::SeekFrom::Start(meta_page_offset))
+                .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
+            let read_bytes = self
+                .file
+                .read(&mut buf)
+                .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
+
+            if read_bytes >= META_READ_LEN {
+                let meta_page_candidate = boltypes::Page::new(buf);
+                if let boltypes::Page::MetaPage(meta_page) = meta_page_candidate {
+                    if let Ok(valid_meta) = meta_page.meta() {
+                        // Validate that the page_size in the meta matches our candidate
+                        if valid_meta.page_size == page_size_candidate {
+                            return Ok(valid_meta.page_size);
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(DatabaseError::InvalidMeta)
     }
 
     fn get_key_value_inner(
@@ -664,6 +741,7 @@ where
 #[derive(TypedBuilder)]
 pub struct AnclaOptions {
     db_path: String,
+    page_size: Option<u32>,
 }
 
 #[cfg(test)]
@@ -761,6 +839,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                 )
+                .page_size(None)
                 .build(),
         )
         .expect("open db successfully");
@@ -847,9 +926,7 @@ mod tests {
                         );
                     }
                     _ => {
-                        panic!(
-                            "want bucket item at {i} but got another under: {parent}",
-                        );
+                        panic!("want bucket item at {i} but got another under: {parent}",);
                     }
                 },
             }
@@ -928,6 +1005,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                 )
+                .page_size(None)
                 .build(),
         )
         .expect("open db successfully");
@@ -958,6 +1036,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                 )
+                .page_size(None)
                 .build(),
         )
         .expect("open db successfully");
@@ -1002,6 +1081,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                 )
+                .page_size(None)
                 .build(),
         )
         .expect("open db successfully");
