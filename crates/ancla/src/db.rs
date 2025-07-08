@@ -565,6 +565,7 @@ impl DB {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Info {
     pub page_size: u32,
     pub max_pgid: bolt::Pgid,

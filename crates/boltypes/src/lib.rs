@@ -156,7 +156,9 @@ impl TryFrom<&[u8]> for PageHeader {
     }
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(transparent)]
 #[derive(Clone, Copy)]

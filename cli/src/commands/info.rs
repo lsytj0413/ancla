@@ -23,18 +23,36 @@
 use anyhow::Result;
 use clap::Parser;
 use cling::prelude::*;
+use comfy_table::{presets, Cell, Table};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_info")]
-pub struct InfoCommand {}
+pub struct InfoCommand {
+    /// Print output in JSON format
+    #[clap(long)]
+    json: bool,
+}
 
 pub fn run_info(
     state: State<crate::cli_env::Env>,
-    _args: &InfoCommand,
+    args: &InfoCommand,
     _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
     let info = state.0.db.info();
-    println!("Page Size: {:?}", info.page_size);
-    println!("Max PGID: {:?}", info.max_pgid);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&info)?);
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table.load_preset(presets::NOTHING);
+    table.set_header(vec![Cell::new("Page Size"), Cell::new("Max PGID")]);
+    table.add_row(vec![
+        Cell::new(info.page_size.to_string()),
+        Cell::new(info.max_pgid.to_string()),
+    ]);
+    println!("{table}");
+
     Ok(())
 }
