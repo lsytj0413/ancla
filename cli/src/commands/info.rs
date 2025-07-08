@@ -36,5 +36,9 @@ pub fn run_info(
     let info = state.0.db.info();
     println!("Page Size: {:?}", info.page_size);
     println!("Max PGID: {:?}", info.max_pgid);
+    println!("Root PGID: {:?}", info.root_pgid);
+    println!("Freelist PGID: {:?}", info.freelist_pgid);
+    println!("TXID: {:?}", info.txid);
+    println!("Meta PGID: {:?}", info.meta_pgid);
     Ok(())
 }
