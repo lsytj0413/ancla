@@ -24,7 +24,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use cling::prelude::*;
 
-
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about)]
 #[cling(run = "init")]

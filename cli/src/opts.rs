@@ -24,6 +24,13 @@ use clap::Args;
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::prelude::*;
 
+#[derive(clap::ValueEnum, Clone, Default)]
+pub enum OutputFormat {
+    Json,
+    #[default]
+    Table,
+}
+
 #[derive(Args, Collect, Clone, Default)]
 pub struct CommonOpts {
     #[clap(flatten)]
@@ -34,6 +41,9 @@ pub struct CommonOpts {
 
     #[arg(long)]
     pub(crate) page_size: Option<u32>,
+
+    #[clap(long, value_enum, default_value_t=OutputFormat::Table)]
+    pub(crate) output: OutputFormat,
 }
 
 #[derive(Clone, Default)]

@@ -569,6 +569,8 @@ impl DB {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Info {
     pub page_size: u32,
     pub max_pgid: bolt::Pgid,
