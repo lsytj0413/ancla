@@ -28,10 +28,7 @@ use cling::prelude::*;
 #[cling(run = "run_list")]
 pub struct List {}
 
-pub fn run_list(
-    state: State<crate::cli_env::Env>,
-    _args: &List,
-) -> Result<()> {
+pub fn run_list(state: State<crate::cli_env::Env>, _args: &List) -> Result<()> {
     let iter = state.0.db.iter_items();
     for item in iter {
         match item {
