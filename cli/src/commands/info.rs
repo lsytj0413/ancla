@@ -23,6 +23,8 @@
 use anyhow::Result;
 use clap::Parser;
 use cling::prelude::*;
+use comfy_table::{Cell, Table};
+use serde_json;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_info")]
@@ -31,14 +33,29 @@ pub struct InfoCommand {}
 pub fn run_info(
     state: State<crate::cli_env::Env>,
     _args: &InfoCommand,
-    _common_opts: &crate::opts::CommonOpts,
+    common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
     let info = state.0.db.info();
-    println!("Page Size: {:?}", info.page_size);
-    println!("Max PGID: {:?}", info.max_pgid);
-    println!("Root PGID: {:?}", info.root_pgid);
-    println!("Freelist PGID: {:?}", info.freelist_pgid);
-    println!("TXID: {:?}", info.txid);
-    println!("Meta PGID: {:?}", info.meta_pgid);
+
+    match common_opts.output {
+        crate::opts::OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&info)?;
+            println!("{json}");
+        }
+        crate::opts::OutputFormat::Table => {
+            let mut table = Table::new();
+            table.set_header(vec!["Name", "Value"]);
+            table.add_row(vec![Cell::new("Page-Size"), Cell::new(info.page_size)]);
+            table.add_row(vec![Cell::new("Max-PGID"), Cell::new(info.max_pgid)]);
+            table.add_row(vec![Cell::new("Root-PGID"), Cell::new(info.root_pgid)]);
+            table.add_row(vec![
+                Cell::new("Freelist-PGID"),
+                Cell::new(info.freelist_pgid),
+            ]);
+            table.add_row(vec![Cell::new("TXID"), Cell::new(info.txid)]);
+            table.add_row(vec![Cell::new("Meta-PGID"), Cell::new(info.meta_pgid)]);
+            println!("{table}");
+        }
+    }
     Ok(())
 }

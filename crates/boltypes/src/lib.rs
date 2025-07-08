@@ -157,6 +157,7 @@ impl TryFrom<&[u8]> for PageHeader {
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "binrw", derive(binrw::BinRead))]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -1176,7 +1177,8 @@ mod tests {
         data[meta_start + 40..meta_start + 48].copy_from_slice(&10u64.to_le_bytes()); // max_pgid
         data[meta_start + 48..meta_start + 56].copy_from_slice(&100u64.to_le_bytes()); // txid
 
-        let checksum = u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
+        let checksum =
+            u64::from_be_bytes(Fnv64::hash(&data[16..72]).as_bytes().try_into().unwrap());
         data[72..80].copy_from_slice(&checksum.to_le_bytes());
 
         let page = MetaPage(data);
@@ -1349,7 +1351,8 @@ mod tests {
         data[elem_start..elem_start + 4].copy_from_slice(&1u32.to_le_bytes()); // flags (bucket)
         data[elem_start + 4..elem_start + 8].copy_from_slice(&16u32.to_le_bytes()); // pos
         data[elem_start + 8..elem_start + 12].copy_from_slice(&4u32.to_le_bytes()); // ksize
-        data[elem_start + 12..elem_start + 16].copy_from_slice(&(BUCKET_HEADER_SIZE as u32).to_le_bytes()); // vsize (BucketHeader size)
+        data[elem_start + 12..elem_start + 16]
+            .copy_from_slice(&(BUCKET_HEADER_SIZE as u32).to_le_bytes()); // vsize (BucketHeader size)
 
         // Data
         let data_start = elem_start + 16;

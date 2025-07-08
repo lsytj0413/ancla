@@ -38,9 +38,8 @@ pub fn run_unreachable(
 
     let max_pgid = db.info().max_pgid;
 
-    let known_pages: std::collections::HashMap<u64, ancla::PageType> = db.iter_pages()
-        .map(|p| (p.id, p.typ))
-        .collect();
+    let known_pages: std::collections::HashMap<u64, ancla::PageType> =
+        db.iter_pages().map(|p| (p.id, p.typ)).collect();
 
     let all_unreachable_pages: std::collections::HashSet<u64> = (0..max_pgid.into())
         .into_par_iter()
@@ -48,15 +47,16 @@ pub fn run_unreachable(
             match known_pages.get(&page_id) {
                 Some(page_type) => {
                     match page_type {
-                        ancla::PageType::Meta |
-                        ancla::PageType::Freelist |
-                        ancla::PageType::DataBranch |
-                        ancla::PageType::DataLeaf |
-                        ancla::PageType::Free => { // Add Free here
+                        ancla::PageType::Meta
+                        | ancla::PageType::Freelist
+                        | ancla::PageType::DataBranch
+                        | ancla::PageType::DataLeaf
+                        | ancla::PageType::Free => {
+                            // Add Free here
                             None // These are reachable pages, do nothing
                         }
                     }
-                },
+                }
                 None => {
                     // If a page ID within the 0..max_pgid range is not in known_pages, it\'s unreachable
                     Some(page_id)

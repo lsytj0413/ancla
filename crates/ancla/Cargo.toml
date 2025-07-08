@@ -18,7 +18,7 @@ binrw = ["boltypes/binrw"]
 [dependencies]
 thiserror = "2.0.0"
 typed-builder = "0.20.0"
-boltypes = { workspace = true }
+boltypes = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 
 [dev-dependencies]
