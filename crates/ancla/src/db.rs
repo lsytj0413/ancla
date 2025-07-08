@@ -84,7 +84,7 @@ impl DBWrapper {
     /// Creates an item iterator (contains bucket、key-value and so on), and
     /// the iterator will return errors when read database.
     pub fn iter_items(&self) -> impl Iterator<Item = Result<DbItem, DatabaseError>> {
-        let meta = self.inner.lock().unwrap().get_meta();
+        let (meta, _) = self.inner.lock().unwrap().get_meta();
 
         DbItemIterator {
             db: self.clone(),
@@ -100,7 +100,7 @@ impl DBWrapper {
     /// Creates an page iterator, and the iterator will return errors when
     /// read database.
     pub fn iter_pages(&self) -> impl Iterator<Item = PageInfo> {
-        let meta = self.inner.lock().unwrap().get_meta();
+        let (meta, _) = self.inner.lock().unwrap().get_meta();
 
         PageIterator {
             db: self.clone(),
@@ -130,16 +130,20 @@ impl DBWrapper {
     }
 
     pub fn info(&self) -> Info {
-        let meta = self.inner.lock().unwrap().get_meta();
+        let (meta, pgid) = self.inner.lock().unwrap().get_meta();
 
         Info {
             page_size: meta.page_size,
             max_pgid: meta.max_pgid,
+            root_pgid: meta.root_pgid,
+            freelist_pgid: meta.freelist_pgid,
+            txid: meta.txid,
+            meta_pgid: pgid,
         }
     }
 
     pub fn get_key_value(&self, buckets: &[String], key: &String) -> Option<KeyValue> {
-        let meta = self.inner.lock().unwrap().get_meta();
+        let (meta, _) = self.inner.lock().unwrap().get_meta();
         self.inner
             .lock()
             .unwrap()
@@ -415,22 +419,22 @@ impl DB {
         Ok(())
     }
 
-    fn get_meta(&mut self) -> bolt::Meta {
+    fn get_meta(&mut self) -> (bolt::Meta, bolt::Pgid) {
         if self.meta0.is_none() {
-            return self.meta1.unwrap();
+            return (self.meta1.unwrap(), 1.into());
         }
 
         if self.meta1.is_none() {
-            return self.meta0.unwrap();
+            return (self.meta0.unwrap(), 0.into());
         }
 
         let tx0 = self.meta0.unwrap().txid;
         let tx1 = self.meta1.unwrap().txid;
         if tx0 > tx1 {
-            return self.meta0.unwrap();
+            return (self.meta0.unwrap(), 0.into());
         }
 
-        self.meta1.unwrap()
+        (self.meta1.unwrap(), 1.into())
     }
 
     fn determine_page_size(&mut self) -> Result<u32, DatabaseError> {
@@ -568,6 +572,10 @@ impl DB {
 pub struct Info {
     pub page_size: u32,
     pub max_pgid: bolt::Pgid,
+    pub root_pgid: bolt::Pgid,
+    pub freelist_pgid: bolt::Pgid,
+    pub txid: u64,
+    pub meta_pgid: bolt::Pgid,
 }
 
 struct PageIterator {
