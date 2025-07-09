@@ -25,6 +25,7 @@ use clap::Parser;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use serde_json;
+use serde_json_path::{JsonPath, JsonPathExt};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_info")]
@@ -39,8 +40,17 @@ pub fn run_info(
 
     match common_opts.output {
         crate::opts::OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&info)?;
-            println!("{json}");
+            if let Some(json_path_str) = &common_opts.json_path {
+                let json_value = serde_json::to_value(&info)?;
+                let path = JsonPath::parse(json_path_str)?;
+
+                let selected_nodes: Vec<_> = json_value.json_path(&path).into_iter().collect();
+
+                println!("{}", serde_json::to_string_pretty(&selected_nodes)?);
+            } else {
+                let json = serde_json::to_string_pretty(&info)?;
+                println!("{json}");
+            }
         }
         crate::opts::OutputFormat::Table => {
             let mut table = Table::new();

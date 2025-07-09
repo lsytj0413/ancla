@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use anyhow::{Result, bail};
 use clap::Args;
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::prelude::*;
@@ -44,6 +45,18 @@ pub struct CommonOpts {
 
     #[clap(long, value_enum, default_value_t=OutputFormat::Table)]
     pub(crate) output: OutputFormat,
+
+    #[arg(long, help = "Output a specific field using JSONPath. Only valid with --output json")]
+    pub(crate) json_path: Option<String>,
+}
+
+impl CommonOpts {
+    pub fn validate(&self) -> Result<()> {
+        if self.json_path.is_some() && !matches!(self.output, OutputFormat::Json) {
+            bail!("--json-path can only be used with --output json");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
