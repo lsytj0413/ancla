@@ -25,8 +25,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
 pub enum DatabaseError {
-    #[error("{0}")]
-    TooSmallData(#[from] boltypes::Error),
+    #[error("bolttypes error: {0}")]
+    BoltTypes(#[from] boltypes::Error),
 
     #[error("file not found: {0}")]
     FileNotFound(String),

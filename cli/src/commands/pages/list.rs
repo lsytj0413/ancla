@@ -34,7 +34,7 @@ pub fn run_list(
     _args: &List,
     _common_opts: &crate::opts::CommonOpts,
 ) -> Result<()> {
-    let mut pages: Vec<ancla::PageInfo> = state.0.db.iter_pages().collect();
+    let mut pages: Vec<ancla::PageInfo> = state.0.db.iter_pages().map(|x| x.unwrap()).collect();
     pages.sort();
     let mut pages_table = Table::new();
     pages_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
