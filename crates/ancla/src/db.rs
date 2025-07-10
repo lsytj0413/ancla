@@ -99,7 +99,7 @@ impl DBWrapper {
 
     /// Creates an page iterator, and the iterator will return errors when
     /// read database.
-    pub fn iter_pages(&self) -> impl Iterator<Item = PageInfo> {
+    pub fn iter_pages(&self) -> impl Iterator<Item = Result<PageInfo, DatabaseError>> {
         let (meta, _) = self.inner.lock().unwrap().get_meta();
 
         PageIterator {
@@ -148,6 +148,7 @@ impl DBWrapper {
             .lock()
             .unwrap()
             .get_key_value_inner(buckets, key, meta.root_pgid.into())
+            .ok()?
     }
 }
 
@@ -244,7 +245,12 @@ impl Iterator for DbItemIterator {
 
             let item = self.stack.index_mut(self.stack.len() - 1);
             let data = match item.node {
-                ItemNode::Page(page_id) => self.db.inner.lock().unwrap().read_page(page_id.into()),
+                ItemNode::Page(page_id) => {
+                    match self.db.inner.lock().unwrap().read_page(page_id.into()) {
+                        Ok(d) => d,
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
                 ItemNode::Elements(ref kvs) => {
                     if item.index < kvs.len() {
                         item.index += 1;
@@ -359,28 +365,33 @@ impl DB {
         data
     }
 
-    fn read_page(&mut self, page_id: u64) -> Arc<Page> {
+    fn read_page(&mut self, page_id: u64) -> Result<Arc<Page>, DatabaseError> {
         if let Some(data) = self.page_datas.get(&From::from(page_id)) {
-            return Arc::clone(data);
+            return Ok(Arc::clone(data));
         }
 
         let data = self.read(page_id * self.page_size as u64, boltypes::PAGE_HEADER_SIZE);
-        let page: boltypes::PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
+        let page: boltypes::PageHeader =
+            TryFrom::try_from(data.as_slice()).map_err(DatabaseError::BoltTypes)?;
 
         let data_len = self.page_size as usize * (page.overflow + 1) as usize;
         let data = self.read(page_id * self.page_size as u64, data_len);
-        let data = bolt::Page::new(data);
+        let page_data = bolt::Page::new(data).map_err(DatabaseError::BoltTypes)?;
 
-        let (typ, elem) = match &data {
+        let (typ, elem) = match &page_data {
             boltypes::Page::MetaPage(_) => (PageType::Meta, None),
             boltypes::Page::FreelistPage(_) => (PageType::Freelist, None),
             boltypes::Page::LeafPage(leaf) => (
                 PageType::DataLeaf,
-                Some(Element::Leaf(leaf.leaf_elements())),
+                Some(Element::Leaf(
+                    leaf.leaf_elements().map_err(DatabaseError::BoltTypes)?,
+                )),
             ),
             boltypes::Page::BranchPage(branch) => (
                 PageType::DataBranch,
-                Some(Element::Branch(branch.branch_elements())),
+                Some(Element::Branch(
+                    branch.branch_elements().map_err(DatabaseError::BoltTypes)?,
+                )),
             ),
         };
 
@@ -388,26 +399,26 @@ impl DB {
             id: page_id,
             typ,
             overflow: page.overflow as u64,
-            data,
+            data: page_data,
             elem,
         });
         self.page_datas
             .insert(From::from(page_id), Arc::clone(&data));
-        Arc::clone(&data)
+        Ok(Arc::clone(&data))
     }
 
     // TODO: remove unwrap
     fn initialize(&mut self) -> Result<(), DatabaseError> {
-        let data0 = self.read_page(0);
+        let data0 = self.read_page(0)?;
         let meta0 = match &data0.data {
-            boltypes::Page::MetaPage(meta) => meta.meta().unwrap(),
+            boltypes::Page::MetaPage(meta) => meta.meta().map_err(DatabaseError::BoltTypes)?,
             _ => unreachable!("wrong type of page 0"),
         };
         self.meta0 = Some(meta0);
 
-        let data1 = self.read_page(1);
+        let data1 = self.read_page(1)?;
         let meta1 = match &data1.data {
-            boltypes::Page::MetaPage(meta) => meta.meta().unwrap(),
+            boltypes::Page::MetaPage(meta) => meta.meta().map_err(DatabaseError::BoltTypes)?,
             _ => unreachable!("wrong type of page 1"),
         };
         self.meta1 = Some(meta1);
@@ -453,8 +464,7 @@ impl DB {
             .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
 
         if read_bytes_meta0 >= META_READ_LEN {
-            let meta_page_candidate = boltypes::Page::new(buf_meta0);
-            if let boltypes::Page::MetaPage(meta_page) = meta_page_candidate {
+            if let Ok(boltypes::Page::MetaPage(meta_page)) = boltypes::Page::new(buf_meta0) {
                 if let Ok(valid_meta) = meta_page.meta() {
                     return Ok(valid_meta.page_size);
                 }
@@ -489,8 +499,7 @@ impl DB {
                 .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
 
             if read_bytes >= META_READ_LEN {
-                let meta_page_candidate = boltypes::Page::new(buf);
-                if let boltypes::Page::MetaPage(meta_page) = meta_page_candidate {
+                if let Ok(boltypes::Page::MetaPage(meta_page)) = boltypes::Page::new(buf) {
                     if let Ok(valid_meta) = meta_page.meta() {
                         // Validate that the page_size in the meta matches our candidate
                         if valid_meta.page_size == page_size_candidate {
@@ -509,26 +518,27 @@ impl DB {
         buckets: &[String],
         key: &String,
         pgid: u64,
-    ) -> Option<KeyValue> {
-        let data = self.read_page(pgid);
+    ) -> Result<Option<KeyValue>, DatabaseError> {
+        let data = self.read_page(pgid)?;
 
-        match data.elem.as_ref()? {
-            Element::Branch(branch_elements) => {
+        match data.elem.as_ref() {
+            None => Ok(None),
+            Some(Element::Branch(branch_elements)) => {
                 let r = branch_elements
                     .binary_search_by_key(&key.as_bytes(), |elem| elem.key.as_slice());
                 let index = r.unwrap_or_else(|idx| if idx > 0 { idx - 1 } else { 0 });
                 self.get_key_value_inner(buckets, key, branch_elements[index].pgid.into())
             }
-            Element::Leaf(leaf_elements) => {
+            Some(Element::Leaf(leaf_elements)) => {
                 for leaf_item in leaf_elements {
                     match leaf_item {
                         boltypes::LeafElement::KeyValue(kv) => {
                             if kv.key == key.as_bytes() && buckets.is_empty() {
-                                return Some(KeyValue {
+                                return Ok(Some(KeyValue {
                                     key: kv.key.clone(),
                                     value: kv.value.clone(),
                                     depth: 0,
-                                });
+                                }));
                             }
                         }
                         boltypes::LeafElement::Bucket { name, pgid } => {
@@ -552,18 +562,18 @@ impl DB {
                             if name == buckets[0].as_bytes() {
                                 for item in items {
                                     if item.key == key.as_bytes() {
-                                        return Some(KeyValue {
+                                        return Ok(Some(KeyValue {
                                             key: item.key.clone(),
                                             value: item.value.clone(),
                                             depth: 0,
-                                        });
+                                        }));
                                     }
                                 }
                             }
                         }
                     }
                 }
-                None
+                Ok(None)
             }
         }
     }
@@ -592,7 +602,7 @@ struct PageIterItem {
 }
 
 impl Iterator for PageIterator {
-    type Item = PageInfo;
+    type Item = Result<PageInfo, DatabaseError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.stack.is_empty() {
@@ -601,36 +611,51 @@ impl Iterator for PageIterator {
 
         let item = self.stack.remove(0);
         if item.typ == PageType::Free {
-            return Some(PageInfo {
+            return Some(Ok(PageInfo {
                 id: item.page_id,
                 typ: PageType::Free,
                 overflow: 0,
                 capacity: 4096,
                 used: 0,
                 parent_page_id: None,
-            });
+            }));
         }
 
-        let data = self.db.inner.lock().unwrap().read_page(item.page_id);
+        let data = match self.db.inner.lock().unwrap().read_page(item.page_id) {
+            Ok(d) => d,
+            Err(e) => return Some(Err(e)),
+        };
+
         if data.typ == PageType::Meta {
-            return Some(PageInfo {
+            let capacity = match data.data.capacity(self.db.info().page_size) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+            };
+            let used = match data.data.used() {
+                Ok(u) => u,
+                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+            };
+            return Some(Ok(PageInfo {
                 id: data.id,
                 typ: PageType::Meta,
                 overflow: data.overflow,
-                capacity: data.data.capacity(self.db.info().page_size) as u64,
-                used: data.data.used() as u64,
+                capacity: capacity as u64,
+                used: used as u64,
                 parent_page_id: None,
-            });
+            }));
         } else if data.typ == PageType::Freelist {
-            let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
+            let page: bolt::PageHeader = match TryFrom::try_from(data.data.as_slice()) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+            };
             let freelist = match &data.data {
-                boltypes::Page::FreelistPage(freelist) => freelist.free_pages(),
+                boltypes::Page::FreelistPage(freelist) => match freelist.free_pages() {
+                    Ok(f) => f,
+                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+                },
                 _ => unreachable!("must be freelist page"),
             };
             for &i in &freelist {
-                // See
-                // 1. https://stackoverflow.com/questions/59123462/why-is-iterating-over-a-collection-via-for-loop-considered-a-move-in-rust
-                // 2. https://doc.rust-lang.org/reference/expressions/loop-expr.html#iterator-loops
                 self.stack.push(PageIterItem {
                     parent_page_id: None,
                     page_id: i.into(),
@@ -638,17 +663,28 @@ impl Iterator for PageIterator {
                 });
             }
 
-            return Some(PageInfo {
+            let capacity = match data.data.capacity(self.db.info().page_size) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+            };
+            let used = match data.data.used() {
+                Ok(u) => u,
+                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+            };
+            return Some(Ok(PageInfo {
                 id: item.page_id,
                 typ: PageType::Freelist,
                 overflow: page.overflow as u64,
-                capacity: data.data.capacity(self.db.info().page_size) as u64,
-                used: data.data.used() as u64,
+                capacity: capacity as u64,
+                used: used as u64,
                 parent_page_id: None,
-            });
+            }));
         }
 
-        let page: bolt::PageHeader = TryFrom::try_from(data.data.as_slice()).unwrap();
+        let page: bolt::PageHeader = match TryFrom::try_from(data.data.as_slice()) {
+            Ok(p) => p,
+            Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+        };
         match data.elem.as_ref().expect("must be leaf or branch") {
             Element::Branch(branch_elements) => {
                 for branch_item in branch_elements {
@@ -659,14 +695,22 @@ impl Iterator for PageIterator {
                     });
                 }
 
-                Some(PageInfo {
+                let capacity = match data.data.capacity(self.db.info().page_size) {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+                };
+                let used = match data.data.used() {
+                    Ok(u) => u,
+                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+                };
+                Some(Ok(PageInfo {
                     id: item.page_id,
                     typ: PageType::DataBranch,
                     overflow: data.overflow,
-                    capacity: data.data.capacity(self.db.info().page_size) as u64,
-                    used: data.data.used() as u64,
+                    capacity: capacity as u64,
+                    used: used as u64,
                     parent_page_id: item.parent_page_id,
-                })
+                }))
             }
             Element::Leaf(leaf_elements) => {
                 for leaf_item in leaf_elements {
@@ -683,14 +727,22 @@ impl Iterator for PageIterator {
                     }
                 }
 
-                Some(PageInfo {
+                let capacity = match data.data.capacity(self.db.info().page_size) {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+                };
+                let used = match data.data.used() {
+                    Ok(u) => u,
+                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
+                };
+                Some(Ok(PageInfo {
                     id: item.page_id,
                     typ: PageType::DataLeaf,
                     overflow: page.overflow as u64,
-                    capacity: data.data.capacity(self.db.info().page_size) as u64,
-                    used: data.data.used() as u64,
+                    capacity: capacity as u64,
+                    used: used as u64,
                     parent_page_id: item.parent_page_id,
-                })
+                }))
             }
         }
     }
@@ -1096,7 +1148,7 @@ mod tests {
         )
         .expect("open db successfully");
 
-        let actual_pages: Vec<PageInfo> = db.iter_pages().collect();
+        let actual_pages: Vec<PageInfo> = db.iter_pages().map(|x| x.unwrap()).collect();
 
         let content =
             fs::read_to_string(format!("{}/testdata/page.json", root_dir.to_str().unwrap()))

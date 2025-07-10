@@ -44,7 +44,12 @@ pub enum Error {
 
     #[error("page {id} version is invalid, expect {expect}, got {got}")]
     InvalidPageVersion { expect: u32, got: u32, id: u64 },
+
+    #[error("invalid data: {0}")]
+    InvalidData(&'static str),
+
 }
+
 
 mod utils {
     trait ByteReadMarker {}
@@ -122,12 +127,13 @@ pub const PAGE_HEADER_SIZE: usize = std::mem::size_of::<PageHeader>();
 
 impl PageHeader {
     #[cfg(feature = "binrw")]
-    fn decode(data: &[u8]) -> Self {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
         let mut cursor = std::io::Cursor::new(data);
         let mut options = binrw::ReadOptions::default();
         options.endian = binrw::Endian::Little;
         options.offset = 0;
-        Self::read_options(&mut cursor, &options, ()).unwrap()
+        Self::read_options(&mut cursor, &options, ())
+            .map_err(|_| Error::InvalidData("failed to parse PageHeader"))
     }
 
     #[cfg(not(feature = "binrw"))]
@@ -152,7 +158,14 @@ impl TryFrom<&[u8]> for PageHeader {
             });
         }
 
-        Ok(Self::decode(data))
+        #[cfg(feature = "binrw")]
+        {
+            Self::decode(data)
+        }
+        #[cfg(not(feature = "binrw"))]
+        {
+            Ok(Self::decode(data))
+        }
     }
 }
 
@@ -233,7 +246,7 @@ fn pageflag_custom_parse<R: binrw::io::Read + binrw::io::Seek>(
     _: (),
 ) -> binrw::BinResult<PageFlag> {
     let mut buf = [0; 2];
-    reader.read_exact(&mut buf).unwrap();
+    reader.read_exact(&mut buf)?;
     Ok(PageFlag::from_bits_truncate(utils::read_value::<u16>(
         &buf, 0,
     )))
@@ -248,19 +261,19 @@ pub enum Page {
 }
 
 impl Page {
-    pub fn new(data: Vec<u8>) -> Page {
-        let header: PageHeader = TryFrom::try_from(data.as_slice()).unwrap();
+    pub fn new(data: Vec<u8>) -> Result<Page, Error> {
+        let header: PageHeader = TryFrom::try_from(data.as_slice())?;
         if header.flags.is_meta_page() {
-            return Page::MetaPage(MetaPage(data));
+            return Ok(Page::MetaPage(MetaPage(data)));
         } else if header.flags.is_freelist_page() {
-            return Page::FreelistPage(FreelistPage(data));
+            return Ok(Page::FreelistPage(FreelistPage(data)));
         } else if header.flags.is_branch_page() {
-            return Page::BranchPage(BranchPage(data));
+            return Ok(Page::BranchPage(BranchPage(data)));
         } else if header.flags.is_leaf_page() {
-            return Page::LeafPage(LeafPage(data));
+            return Ok(Page::LeafPage(LeafPage(data)));
         }
 
-        unreachable!("unknown page flags")
+        Err(Error::InvalidData("unknown page flags"))
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -272,24 +285,23 @@ impl Page {
         }
     }
 
-    pub fn page_header(&self) -> PageHeader {
-        // TODO: remove unwrap
+    pub fn page_header(&self) -> Result<PageHeader, Error> {
         let data = self.as_slice();
-        TryFrom::try_from(data).unwrap()
+        TryFrom::try_from(data)
     }
 
-    pub fn used(&self) -> usize {
+    pub fn used(&self) -> Result<usize, Error> {
         match self {
-            Page::MetaPage(meta) => meta.used(),
+            Page::MetaPage(meta) => Ok(meta.used()),
             Page::FreelistPage(freelist) => freelist.used(),
             Page::BranchPage(branch) => branch.used(),
             Page::LeafPage(leaf) => leaf.used(),
         }
     }
 
-    pub fn capacity(&self, page_size: u32) -> usize {
-        let header = self.page_header();
-        ((1 + header.overflow) * page_size) as usize
+    pub fn capacity(&self, page_size: u32) -> Result<usize, Error> {
+        let header = self.page_header()?;
+        Ok(((1 + header.overflow) * page_size) as usize)
     }
 }
 
@@ -297,9 +309,8 @@ impl Page {
 pub struct MetaPage(Vec<u8>);
 
 impl MetaPage {
-    pub fn page_header(&self) -> PageHeader {
-        // TODO: remove unwrap
-        TryFrom::try_from(self.0.as_slice()).unwrap()
+    pub fn page_header(&self) -> Result<PageHeader, Error> {
+        TryFrom::try_from(self.0.as_slice())
     }
 
     pub fn used(&self) -> usize {
@@ -308,7 +319,7 @@ impl MetaPage {
     }
 
     pub fn meta(&self) -> Result<Meta, Error> {
-        let header = self.page_header();
+        let header = self.page_header()?;
         assert!(
             header.flags.is_meta_page(),
             "expect meta page {} but got {}",
@@ -320,10 +331,9 @@ impl MetaPage {
             Fnv64::hash(&self.0[16..72])
                 .as_bytes()
                 .try_into()
-                .expect("calculate checksum successfully"),
+                .map_err(|_| Error::InvalidData("calculate checksum failed"))?,
         );
-        // TODO: remove unwrap
-        let meta: Meta = TryFrom::try_from(self.0.as_slice()).unwrap();
+        let meta: Meta = TryFrom::try_from(self.0.as_slice())?;
         if meta.checksum != actual_checksum {
             return Err(Error::InvalidPageChecksum {
                 expect: actual_checksum,
@@ -353,13 +363,12 @@ impl MetaPage {
 pub struct FreelistPage(Vec<u8>);
 
 impl FreelistPage {
-    pub fn page_header(&self) -> PageHeader {
-        // TODO: remove unwrap
-        TryFrom::try_from(self.0.as_slice()).unwrap()
+    pub fn page_header(&self) -> Result<PageHeader, Error> {
+        TryFrom::try_from(self.0.as_slice())
     }
 
-    pub fn used(&self) -> usize {
-        let header = self.page_header();
+    pub fn used(&self) -> Result<usize, Error> {
+        let header = self.page_header()?;
         let (count, offset) = if header.count != 0xFFFF {
             (header.count as u64, 0)
         } else {
@@ -368,12 +377,11 @@ impl FreelistPage {
                 8,
             )
         };
-        PAGE_HEADER_SIZE + offset + (count as usize) * std::mem::size_of::<Pgid>()
+        Ok(PAGE_HEADER_SIZE + offset + (count as usize) * std::mem::size_of::<Pgid>())
     }
 
-    pub fn free_pages(&self) -> Vec<Pgid> {
-        // TODO: remove unwrap
-        let header = self.page_header();
+    pub fn free_pages(&self) -> Result<Vec<Pgid>, Error> {
+        let header = self.page_header()?;
         assert!(
             header.flags.is_freelist_page(),
             "expect freelist page {} but got {}",
@@ -397,7 +405,7 @@ impl FreelistPage {
                 (i as usize) * 8 + PAGE_HEADER_SIZE + offset,
             )));
         }
-        freelist
+        Ok(freelist)
     }
 }
 
@@ -405,26 +413,26 @@ impl FreelistPage {
 pub struct BranchPage(Vec<u8>);
 
 impl BranchPage {
-    pub fn page_header(&self) -> PageHeader {
-        // TODO: remove unwrap
-        TryFrom::try_from(self.0.as_slice()).unwrap()
+    pub fn page_header(&self) -> Result<PageHeader, Error> {
+        TryFrom::try_from(self.0.as_slice())
     }
 
-    pub fn used(&self) -> usize {
-        let header = self.page_header();
+    pub fn used(&self) -> Result<usize, Error> {
+        let header = self.page_header()?;
         if header.count == 0 {
-            return PAGE_HEADER_SIZE;
+            return Ok(PAGE_HEADER_SIZE);
         }
 
         let last_element_idx = header.count - 1;
         let start = PAGE_HEADER_SIZE + (last_element_idx as usize) * BRANCH_ELEMENT_HEADER_SIZE;
-        let elem_header: BranchElementHeader =
-            TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-        start + elem_header.pos as usize + elem_header.ksize as usize
+        let elem_header: BranchElementHeader = TryFrom::try_from(self.0.get(start..).ok_or(
+            Error::InvalidData("slice out of bounds for branch element header"),
+        )?)?;
+        Ok(start + elem_header.pos as usize + elem_header.ksize as usize)
     }
 
-    pub fn branch_elements(&self) -> Vec<BranchElement> {
-        let header = self.page_header();
+    pub fn branch_elements(&self) -> Result<Vec<BranchElement>, Error> {
+        let header = self.page_header()?;
         assert!(
             header.flags.is_branch_page(),
             "expect branch page {} but got {}",
@@ -432,16 +440,20 @@ impl BranchPage {
             header.flags
         );
 
-        // TODO: remove unwrap
         let mut elements: Vec<BranchElement> = Vec::with_capacity(header.count as usize);
         for i in 0..header.count {
             let start = PAGE_HEADER_SIZE + (i as usize) * BRANCH_ELEMENT_HEADER_SIZE;
-            let elem_header: BranchElementHeader =
-                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-            elements.push(BranchElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+            let elem_header: BranchElementHeader = TryFrom::try_from(self.0.get(start..).ok_or(
+                Error::InvalidData("slice out of bounds for branch element header"),
+            )?)?;
+            elements.push(BranchElement::from_page(
+                self.0.as_slice(),
+                &elem_header,
+                i,
+            )?);
         }
 
-        elements
+        Ok(elements)
     }
 }
 
@@ -449,26 +461,29 @@ impl BranchPage {
 pub struct LeafPage(Vec<u8>);
 
 impl LeafPage {
-    pub fn page_header(&self) -> PageHeader {
-        // TODO: remove unwrap
-        TryFrom::try_from(self.0.as_slice()).unwrap()
+    pub fn page_header(&self) -> Result<PageHeader, Error> {
+        TryFrom::try_from(self.0.as_slice())
     }
 
-    pub fn used(&self) -> usize {
-        let header = self.page_header();
+    pub fn used(&self) -> Result<usize, Error> {
+        let header = self.page_header()?;
         if header.count == 0 {
-            return PAGE_HEADER_SIZE;
+            return Ok(PAGE_HEADER_SIZE);
         }
 
         let last_element_idx = header.count - 1;
         let start = PAGE_HEADER_SIZE + (last_element_idx as usize) * LEAF_ELEMENT_HEADER_SIZE;
-        let elem_header: LeafElementHeader =
-            TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-        start + elem_header.pos as usize + elem_header.ksize as usize + elem_header.vsize as usize
+        let elem_header: LeafElementHeader = TryFrom::try_from(self.0.get(start..).ok_or(
+            Error::InvalidData("slice out of bounds for leaf element header"),
+        )?)?;
+        Ok(start
+            + elem_header.pos as usize
+            + elem_header.ksize as usize
+            + elem_header.vsize as usize)
     }
 
-    pub fn leaf_elements(&self) -> Vec<LeafElement> {
-        let header = self.page_header();
+    pub fn leaf_elements(&self) -> Result<Vec<LeafElement>, Error> {
+        let header = self.page_header()?;
         assert!(
             header.flags.is_leaf_page(),
             "expect leaf page {} but got {}",
@@ -476,16 +491,16 @@ impl LeafPage {
             header.flags
         );
 
-        // TODO: remove unwrap
         let mut elements: Vec<LeafElement> = Vec::with_capacity(header.count as usize);
         for i in 0..header.count {
             let start = PAGE_HEADER_SIZE + (i as usize) * LEAF_ELEMENT_HEADER_SIZE;
-            let elem_header: LeafElementHeader =
-                TryFrom::try_from(self.0.get(start..self.0.len()).unwrap()).unwrap();
-            elements.push(LeafElement::from_page(self.0.as_slice(), &elem_header, i).unwrap());
+            let elem_header: LeafElementHeader = TryFrom::try_from(self.0.get(start..).ok_or(
+                Error::InvalidData("slice out of bounds for leaf element header"),
+            )?)?;
+            elements.push(LeafElement::from_page(self.0.as_slice(), &elem_header, i)?);
         }
 
-        elements
+        Ok(elements)
     }
 }
 
@@ -540,12 +555,16 @@ impl Meta {
     }
 
     #[cfg(feature = "binrw")]
-    fn decode(data: &[u8]) -> Self {
-        let mut cursor = std::io::Cursor::new(data.get(16..80).unwrap());
+    fn decode(data: &[u8]) -> Result<Self, Error> {
+        let mut cursor = std::io::Cursor::new(data.get(16..80).ok_or(Error::TooSmallData {
+            expect: 80,
+            got: data.len(),
+        })?);
         let mut options = binrw::ReadOptions::default();
         options.endian = binrw::Endian::Little;
         options.offset = 0;
-        Self::read_options(&mut cursor, &options, ()).unwrap()
+        Self::read_options(&mut cursor, &options, ())
+            .map_err(|_| Error::InvalidData("failed to parse Meta"))
     }
 }
 
@@ -560,7 +579,14 @@ impl TryFrom<&[u8]> for Meta {
             });
         }
 
-        Ok(Self::decode(data))
+        #[cfg(feature = "binrw")]
+        {
+            Self::decode(data)
+        }
+        #[cfg(not(feature = "binrw"))]
+        {
+            Ok(Self::decode(data))
+        }
     }
 }
 
@@ -591,12 +617,13 @@ impl BranchElementHeader {
     }
 
     #[cfg(feature = "binrw")]
-    fn decode(data: &[u8]) -> Self {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
         let mut cursor = std::io::Cursor::new(data);
         let mut options = binrw::ReadOptions::default();
         options.endian = binrw::Endian::Little;
         options.offset = 0;
-        Self::read_options(&mut cursor, &options, ()).unwrap()
+        Self::read_options(&mut cursor, &options, ())
+            .map_err(|_| Error::InvalidData("failed to parse BranchElementHeader"))
     }
 }
 
@@ -611,7 +638,14 @@ impl TryFrom<&[u8]> for BranchElementHeader {
             });
         }
 
-        Ok(Self::decode(data))
+        #[cfg(feature = "binrw")]
+        {
+            Self::decode(data)
+        }
+        #[cfg(not(feature = "binrw"))]
+        {
+            Ok(Self::decode(data))
+        }
     }
 }
 
@@ -649,7 +683,10 @@ impl BranchElement {
         }
 
         Ok(BranchElement {
-            key: page.get(key_start..key_end).unwrap().to_vec(),
+            key: page
+                .get(key_start..key_end)
+                .ok_or(Error::InvalidData("key slice out of bounds"))?
+                .to_vec(),
             pgid: elem.pgid,
         })
     }
@@ -687,12 +724,13 @@ impl LeafElementHeader {
     }
 
     #[cfg(feature = "binrw")]
-    fn decode(data: &[u8]) -> Self {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
         let mut cursor = std::io::Cursor::new(data);
         let mut options = binrw::ReadOptions::default();
         options.endian = binrw::Endian::Little;
         options.offset = 0;
-        Self::read_options(&mut cursor, &options, ()).unwrap()
+        Self::read_options(&mut cursor, &options, ())
+            .map_err(|_| Error::InvalidData("failed to parse LeafElementHeader"))
     }
 
     pub fn is_bucket(&self) -> bool {
@@ -711,7 +749,14 @@ impl TryFrom<&[u8]> for LeafElementHeader {
             });
         }
 
-        Ok(Self::decode(data))
+        #[cfg(feature = "binrw")]
+        {
+            Self::decode(data)
+        }
+        #[cfg(not(feature = "binrw"))]
+        {
+            Ok(Self::decode(data))
+        }
     }
 }
 
@@ -739,12 +784,13 @@ impl BucketHeader {
     }
 
     #[cfg(feature = "binrw")]
-    fn decode(data: &[u8]) -> Self {
+    fn decode(data: &[u8]) -> Result<Self, Error> {
         let mut cursor = std::io::Cursor::new(data);
         let mut options = binrw::ReadOptions::default();
         options.endian = binrw::Endian::Little;
         options.offset = 0;
-        Self::read_options(&mut cursor, &options, ()).unwrap()
+        Self::read_options(&mut cursor, &options, ())
+            .map_err(|_| Error::InvalidData("failed to parse BucketHeader"))
     }
 
     pub fn is_inline(self) -> bool {
@@ -763,7 +809,14 @@ impl TryFrom<&[u8]> for BucketHeader {
             });
         }
 
-        Ok(Self::decode(data))
+        #[cfg(feature = "binrw")]
+        {
+            Self::decode(data)
+        }
+        #[cfg(not(feature = "binrw"))]
+        {
+            Ok(Self::decode(data))
+        }
     }
 }
 
@@ -812,8 +865,14 @@ impl KeyValue {
         }
 
         Ok(KeyValue {
-            key: page.get(key_start..key_end).unwrap().to_vec(),
-            value: page.get(key_end..value_end).unwrap().to_vec(),
+            key: page
+                .get(key_start..key_end)
+                .ok_or(Error::InvalidData("key slice out of bounds"))?
+                .to_vec(),
+            value: page
+                .get(key_end..value_end)
+                .ok_or(Error::InvalidData("value slice out of bounds"))?
+                .to_vec(),
         })
     }
 }
@@ -866,9 +925,12 @@ impl LeafElement {
             });
         }
 
-        // TODO: remove unwrap
-        let key = page.get(key_start..key_end).unwrap();
-        let value = page.get(key_end..value_end).unwrap();
+        let key = page
+            .get(key_start..key_end)
+            .ok_or(Error::InvalidData("key slice out of bounds"))?;
+        let value = page
+            .get(key_end..value_end)
+            .ok_or(Error::InvalidData("value slice out of bounds"))?;
 
         let bucket_header: BucketHeader = TryFrom::try_from(value)?;
         if !bucket_header.is_inline() {
@@ -878,18 +940,23 @@ impl LeafElement {
             });
         }
 
-        let inline_page = LeafPage(value.get(BUCKET_HEADER_SIZE..).unwrap().to_vec());
+        let inline_page_data = value
+            .get(BUCKET_HEADER_SIZE..)
+            .ok_or(Error::InvalidData("inline page slice out of bounds"))?;
+        let inline_page = LeafPage(inline_page_data.to_vec());
         Ok(LeafElement::InlineBucket {
             name: key.to_vec(),
             pgid: bucket_header.root, // TODO: consider use which pgid
             items: inline_page
-                .leaf_elements()
+                .leaf_elements()?
                 .into_iter()
                 .map(|x| match x {
-                    LeafElement::KeyValue(kv) => kv,
-                    _ => panic!("unreachable"),
+                    LeafElement::KeyValue(kv) => Ok(kv),
+                    _ => Err(Error::InvalidData(
+                        "unreachable: non-kv element in inline bucket",
+                    )),
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 }
@@ -1099,9 +1166,9 @@ mod tests {
         data[0..8].copy_from_slice(&1u64.to_le_bytes());
         data[8..10].copy_from_slice(&PageFlag::BranchPageFlag.bits().to_le_bytes());
 
-        let page = Page::new(data.clone());
+        let page = Page::new(data.clone()).unwrap();
         assert_eq!(page.as_slice(), &data);
-        let header = page.page_header();
+        let header = page.page_header().unwrap();
         assert_eq!(header.id.0, 1);
         assert_eq!(header.flags, PageFlag::BranchPageFlag);
     }
@@ -1182,7 +1249,7 @@ mod tests {
         data[72..80].copy_from_slice(&checksum.to_le_bytes());
 
         let page = MetaPage(data);
-        let header = page.page_header();
+        let header = page.page_header().unwrap();
         assert_eq!(header.flags, PageFlag::MetaPageFlag);
 
         let meta = page.meta().unwrap();
@@ -1212,10 +1279,10 @@ mod tests {
         data[pids_start + 16..pids_start + 24].copy_from_slice(&12u64.to_le_bytes());
 
         let page = FreelistPage(data);
-        let header = page.page_header();
+        let header = page.page_header().unwrap();
         assert_eq!(header.flags, PageFlag::FreelistPageFlag);
 
-        let free_pages = page.free_pages();
+        let free_pages = page.free_pages().unwrap();
         assert_eq!(free_pages, vec![Pgid(10), Pgid(11), Pgid(12)]);
     }
 
@@ -1239,10 +1306,10 @@ mod tests {
         data[data_start..data_start + 3].copy_from_slice(b"key");
 
         let page = BranchPage(data);
-        let header = page.page_header();
+        let header = page.page_header().unwrap();
         assert_eq!(header.flags, PageFlag::BranchPageFlag);
 
-        let elements = page.branch_elements();
+        let elements = page.branch_elements().unwrap();
         assert_eq!(elements.len(), 1);
         assert_eq!(elements[0].key, b"key");
         assert_eq!(elements[0].pgid.0, 5);
@@ -1269,10 +1336,10 @@ mod tests {
         data[data_start + 3..data_start + 3 + 5].copy_from_slice(b"value");
 
         let page = LeafPage(data);
-        let header = page.page_header();
+        let header = page.page_header().unwrap();
         assert_eq!(header.flags, PageFlag::LeafPageFlag);
 
-        let elements = page.leaf_elements();
+        let elements = page.leaf_elements().unwrap();
         assert_eq!(elements.len(), 1);
         match &elements[0] {
             LeafElement::KeyValue(kv) => {
@@ -1378,14 +1445,17 @@ mod tests {
         // PageHeader with overflow = 1
         data[12..16].copy_from_slice(&1u32.to_le_bytes());
         data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
-        let page = Page::new(data);
-        assert_eq!(page.capacity(page_size as u32), (1 + 1) * page_size);
+        let page = Page::new(data).unwrap();
+        assert_eq!(
+            page.capacity(page_size as u32).unwrap(),
+            (1 + 1) * page_size
+        );
 
         let mut data = vec![0; page_size];
         // PageHeader with overflow = 0
         data[12..16].copy_from_slice(&0u32.to_le_bytes());
         data[8..10].copy_from_slice(&PageFlag::LeafPageFlag.bits().to_le_bytes());
-        let page = Page::new(data);
-        assert_eq!(page.capacity(page_size as u32), page_size);
+        let page = Page::new(data).unwrap();
+        assert_eq!(page.capacity(page_size as u32).unwrap(), page_size);
     }
 }

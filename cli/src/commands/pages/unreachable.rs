@@ -38,8 +38,11 @@ pub fn run_unreachable(
 
     let max_pgid = db.info().max_pgid;
 
-    let known_pages: std::collections::HashMap<u64, ancla::PageType> =
-        db.iter_pages().map(|p| (p.id, p.typ)).collect();
+    let known_pages: std::collections::HashMap<u64, ancla::PageType> = db
+        .iter_pages()
+        .map(|p| p.unwrap())
+        .map(|p| (p.id, p.typ))
+        .collect();
 
     let all_unreachable_pages: std::collections::HashSet<u64> = (0..max_pgid.into())
         .into_par_iter()
