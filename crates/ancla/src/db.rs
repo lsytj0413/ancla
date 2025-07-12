@@ -627,10 +627,7 @@ impl Iterator for PageIterator {
         };
 
         if data.typ == PageType::Meta {
-            let capacity = match data.data.capacity(self.db.info().page_size) {
-                Ok(c) => c,
-                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-            };
+            let capacity = data.data.capacity(self.db.info().page_size);
             let used = match data.data.used() {
                 Ok(u) => u,
                 Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
@@ -663,10 +660,7 @@ impl Iterator for PageIterator {
                 });
             }
 
-            let capacity = match data.data.capacity(self.db.info().page_size) {
-                Ok(c) => c,
-                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-            };
+            let capacity = data.data.capacity(self.db.info().page_size);
             let used = match data.data.used() {
                 Ok(u) => u,
                 Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
@@ -695,10 +689,7 @@ impl Iterator for PageIterator {
                     });
                 }
 
-                let capacity = match data.data.capacity(self.db.info().page_size) {
-                    Ok(c) => c,
-                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-                };
+                let capacity = data.data.capacity(self.db.info().page_size);
                 let used = match data.data.used() {
                     Ok(u) => u,
                     Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
@@ -727,10 +718,7 @@ impl Iterator for PageIterator {
                     }
                 }
 
-                let capacity = match data.data.capacity(self.db.info().page_size) {
-                    Ok(c) => c,
-                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-                };
+                let capacity = data.data.capacity(self.db.info().page_size);
                 let used = match data.data.used() {
                     Ok(u) => u,
                     Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
