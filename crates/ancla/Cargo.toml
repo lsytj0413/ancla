@@ -20,6 +20,11 @@ thiserror = "2.0.0"
 typed-builder = "0.20.0"
 boltypes = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
+datafusion = { workspace = true }
+arrow = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true}
