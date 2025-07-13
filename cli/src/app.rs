@@ -57,4 +57,7 @@ pub enum Commands {
 
     #[clap(subcommand)]
     KV(crate::commands::kvs::Kvs),
+
+    /// Execute a SQL query against the database.
+    Query(crate::commands::query::QueryCommand),
 }

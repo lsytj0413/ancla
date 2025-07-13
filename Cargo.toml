@@ -10,3 +10,8 @@ serde_json = "1.0.128"
 serde = { version = "1.0", features = ["derive"] }
 boltypes = { path = "crates/boltypes" }
 ancla = { path = "crates/ancla" }
+datafusion = { version = "40.0.0" }
+arrow = { version = "53.0.0" }
+tokio = { version = "1", features = ["full"] }
+async-trait = { version = "0.1" }
+futures = { version = "0.3" }

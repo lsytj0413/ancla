@@ -34,7 +34,7 @@ use std::{
 use typed_builder::TypedBuilder;
 
 /// DBWrapper is the bolt reader for multi thread.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DBWrapper {
     inner: Arc<Mutex<DB>>,
 }
@@ -161,6 +161,17 @@ pub struct DB {
     page_size: u32,
 }
 
+impl std::fmt::Debug for DB {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DB")
+            .field("page_datas", &self.page_datas)
+            .field("meta0", &self.meta0)
+            .field("meta1", &self.meta1)
+            .field("page_size", &self.page_size)
+            .finish()
+    }
+}
+
 struct Page {
     id: u64,
     typ: PageType,
@@ -169,6 +180,18 @@ struct Page {
     elem: Option<Element>,
 }
 
+impl std::fmt::Debug for Page {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Page")
+            .field("id", &self.id)
+            .field("typ", &self.typ)
+            .field("overflow", &self.overflow)
+            .field("elem", &self.elem)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 enum Element {
     Branch(Vec<boltypes::BranchElement>),
     Leaf(Vec<boltypes::LeafElement>),
