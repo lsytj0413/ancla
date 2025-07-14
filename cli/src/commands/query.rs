@@ -24,9 +24,9 @@ use std::sync::Arc;
 
 use ancla::query::{engine::QueryEngine, pages::PagesTableProvider};
 use anyhow::Result;
+use cling::prelude::*;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::print_batches;
-use cling::prelude::*;
 
 /// `QueryCommand` defines the command-line interface for executing SQL queries.
 /// It uses `clap` for argument parsing and `cling` for command execution.
@@ -46,7 +46,7 @@ pub struct QueryCommand {
 ///
 /// # Arguments
 ///
-/// * `env` - The application environment, containing the `DBWrapper` instance.
+/// * `env` - The application environment, containing the `DB` instance.
 /// * `me` - The `QueryCommand` instance, holding the SQL query string.
 ///
 /// # Returns
@@ -58,7 +58,7 @@ async fn run(env: State<crate::cli_env::Env>, me: &QueryCommand) -> Result<()> {
 
     // Register the `pages` table with the query engine.
     // `PagesTableProvider` is responsible for providing DataFusion with access to the BoltDB page data.
-    // `env.0.db.clone()` creates a new `DBWrapper` instance that shares the underlying database connection.
+    // `env.0.db.clone()` creates a new `DB` instance that shares the underlying database connection.
     engine.register_table("pages", Arc::new(PagesTableProvider::new(env.0.db.clone())))?;
 
     // Execute the SQL query using the DataFusion context.

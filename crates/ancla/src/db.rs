@@ -33,13 +33,13 @@ use std::{
 
 use typed_builder::TypedBuilder;
 
-/// DBWrapper is the bolt reader for multi thread.
+/// DB is the bolt reader for multi thread.
 #[derive(Clone, Debug)]
-pub struct DBWrapper {
-    inner: Arc<Mutex<DB>>,
+pub struct DB {
+    inner: Arc<Mutex<DBInner>>,
 }
 
-impl DBWrapper {
+impl DB {
     /// Attempts to open bolt file in read-only mode.
     ///
     /// # Errors
@@ -52,7 +52,7 @@ impl DBWrapper {
             _ => DatabaseError::IOError(ancla_options.db_path.clone(), e.to_string()),
         })?;
 
-        let mut db = DB {
+        let mut db = DBInner {
             file,
             page_datas: BTreeMap::new(),
             meta0: None,
@@ -152,7 +152,7 @@ impl DBWrapper {
     }
 }
 
-pub struct DB {
+pub struct DBInner {
     file: File,
 
     page_datas: BTreeMap<boltypes::Pgid, Arc<Page>>,
@@ -161,7 +161,7 @@ pub struct DB {
     page_size: u32,
 }
 
-impl std::fmt::Debug for DB {
+impl std::fmt::Debug for DBInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DB")
             .field("page_datas", &self.page_datas)
@@ -253,7 +253,7 @@ pub enum DbItem {
 }
 
 struct DbItemIterator {
-    db: DBWrapper,
+    db: DB,
     stack: Vec<IterItem>,
 }
 
@@ -377,7 +377,7 @@ impl Iterator for DbItemIterator {
     }
 }
 
-impl DB {
+impl DBInner {
     fn read(&mut self, start: u64, size: usize) -> Vec<u8> {
         let mut data = vec![0u8; size];
         self.file.seek(io::SeekFrom::Start(start)).unwrap();
@@ -399,7 +399,8 @@ impl DB {
 
         let data_len = self.page_size as usize * (page.overflow + 1) as usize;
         let data = self.read(page_id * self.page_size as u64, data_len);
-        let page_data = bolt::Page::new(data).map_err(DatabaseError::BoltTypes)?;
+        let page_data =
+            bolt::Page::new(data, self.page_size as usize).map_err(DatabaseError::BoltTypes)?;
 
         let (typ, elem) = match &page_data {
             boltypes::Page::MetaPage(_) => (PageType::Meta, None),
@@ -487,10 +488,8 @@ impl DB {
             .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
 
         if read_bytes_meta0 >= META_READ_LEN {
-            if let Ok(boltypes::Page::MetaPage(meta_page)) = boltypes::Page::new(buf_meta0) {
-                if let Ok(valid_meta) = meta_page.meta() {
-                    return Ok(valid_meta.page_size);
-                }
+            if let Ok(valid_meta) = boltypes::Meta::try_from(buf_meta0.as_slice()) {
+                return Ok(valid_meta.page_size);
             }
         }
 
@@ -522,12 +521,10 @@ impl DB {
                 .map_err(|e| DatabaseError::Io(Arc::new(e)))?;
 
             if read_bytes >= META_READ_LEN {
-                if let Ok(boltypes::Page::MetaPage(meta_page)) = boltypes::Page::new(buf) {
-                    if let Ok(valid_meta) = meta_page.meta() {
-                        // Validate that the page_size in the meta matches our candidate
-                        if valid_meta.page_size == page_size_candidate {
-                            return Ok(valid_meta.page_size);
-                        }
+                if let Ok(valid_meta) = boltypes::Meta::try_from(buf.as_slice()) {
+                    // Validate that the page_size in the meta matches our candidate
+                    if valid_meta.page_size == page_size_candidate {
+                        return Ok(valid_meta.page_size);
                     }
                 }
             }
@@ -614,7 +611,7 @@ pub struct Info {
 }
 
 struct PageIterator {
-    db: DBWrapper,
+    db: DB,
     stack: Vec<PageIterItem>,
 }
 
@@ -650,11 +647,8 @@ impl Iterator for PageIterator {
         };
 
         if data.typ == PageType::Meta {
-            let capacity = data.data.capacity(self.db.info().page_size);
-            let used = match data.data.used() {
-                Ok(u) => u,
-                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-            };
+            let capacity = data.data.capacity();
+            let used = data.data.used();
             return Some(Ok(PageInfo {
                 id: data.id,
                 typ: PageType::Meta,
@@ -683,11 +677,8 @@ impl Iterator for PageIterator {
                 });
             }
 
-            let capacity = data.data.capacity(self.db.info().page_size);
-            let used = match data.data.used() {
-                Ok(u) => u,
-                Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-            };
+            let capacity = data.data.capacity();
+            let used = data.data.used();
             return Some(Ok(PageInfo {
                 id: item.page_id,
                 typ: PageType::Freelist,
@@ -712,11 +703,8 @@ impl Iterator for PageIterator {
                     });
                 }
 
-                let capacity = data.data.capacity(self.db.info().page_size);
-                let used = match data.data.used() {
-                    Ok(u) => u,
-                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-                };
+                let capacity = data.data.capacity();
+                let used = data.data.used();
                 Some(Ok(PageInfo {
                     id: item.page_id,
                     typ: PageType::DataBranch,
@@ -741,11 +729,8 @@ impl Iterator for PageIterator {
                     }
                 }
 
-                let capacity = data.data.capacity(self.db.info().page_size);
-                let used = match data.data.used() {
-                    Ok(u) => u,
-                    Err(e) => return Some(Err(DatabaseError::BoltTypes(e))),
-                };
+                let capacity = data.data.capacity();
+                let used = data.data.used();
                 Some(Ok(PageInfo {
                     id: item.page_id,
                     typ: PageType::DataLeaf,
@@ -902,7 +887,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DBWrapper::open(
+        let db = DB::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -1068,7 +1053,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DBWrapper::open(
+        let db = DB::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -1099,7 +1084,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DBWrapper::open(
+        let db = DB::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir
@@ -1144,7 +1129,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
-        let db = DBWrapper::open(
+        let db = DB::open(
             AnclaOptions::builder()
                 .db_path(
                     root_dir

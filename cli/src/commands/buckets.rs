@@ -91,7 +91,7 @@ where
     buckets
 }
 
-fn iter_buckets(db: ancla::DBWrapper) -> Vec<Bucket> {
+fn iter_buckets(db: ancla::DB) -> Vec<Bucket> {
     let mut buckets = Vec::<Bucket>::new();
     let mut peek_iter = db.iter_buckets().peekable();
 

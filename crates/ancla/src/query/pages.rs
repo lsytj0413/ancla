@@ -23,7 +23,7 @@
 use std::{any::Any, collections::HashMap, fmt, pin::Pin, sync::Arc};
 
 use crate::{
-    db::{DBWrapper, PageInfo},
+    db::{PageInfo, DB},
     DatabaseError,
 };
 use async_trait::async_trait;
@@ -49,7 +49,7 @@ use futures::Stream;
 /// It defines the schema of the `pages` table and how to create an execution plan
 /// for scanning the page data.
 pub struct PagesTableProvider {
-    db: DBWrapper,
+    db: DB,
 }
 
 impl PagesTableProvider {
@@ -57,8 +57,8 @@ impl PagesTableProvider {
     ///
     /// # Arguments
     ///
-    /// * `db` - A `DBWrapper` instance used to access the underlying BoltDB.
-    pub fn new(db: DBWrapper) -> Self {
+    /// * `db` - A `DB` instance used to access the underlying BoltDB.
+    pub fn new(db: DB) -> Self {
         Self { db }
     }
 }
@@ -125,7 +125,7 @@ impl TableProvider for PagesTableProvider {
         // Create and return a `PagesScanExec` which is the physical operator
         // responsible for reading the page data.
         Ok(Arc::new(PagesScanExec::new(
-            self.db.clone(), // Clone DBWrapper to pass to the execution plan
+            self.db.clone(), // Clone DB to pass to the execution plan
             projected_schema,
             limit,
         )))
@@ -137,7 +137,7 @@ impl TableProvider for PagesTableProvider {
 /// the scan operation and produce `RecordBatch`es.
 #[derive(Debug)]
 struct PagesScanExec {
-    db: DBWrapper,
+    db: DB,
     projected_schema: SchemaRef,
     limit: Option<usize>,
     properties: PlanProperties,
@@ -148,10 +148,10 @@ impl PagesScanExec {
     ///
     /// # Arguments
     ///
-    /// * `db` - A `DBWrapper` instance to access the underlying BoltDB.
+    /// * `db` - A `DB` instance to access the underlying BoltDB.
     /// * `projected_schema` - The schema of the data that this operator will produce.
     /// * `limit` - An optional limit on the number of rows to read.
-    pub fn new(db: DBWrapper, projected_schema: SchemaRef, limit: Option<usize>) -> Self {
+    pub fn new(db: DB, projected_schema: SchemaRef, limit: Option<usize>) -> Self {
         // Define the properties of this execution plan, which are used by DataFusion
         // for optimization and scheduling.
         let partitioning = Partitioning::UnknownPartitioning(1); // No specific partitioning
@@ -235,7 +235,7 @@ impl ExecutionPlan for PagesScanExec {
     ) -> DataFusionResult<SendableRecordBatchStream> {
         // Create a new `PagesStream` to read data from the database.
         let stream = Box::pin(PagesStream::new(
-            self.db.clone(), // Clone DBWrapper for the stream
+            self.db.clone(), // Clone DB for the stream
             self.projected_schema.clone(),
             self.limit,
         ));
@@ -265,10 +265,10 @@ impl PagesStream {
     ///
     /// # Arguments
     ///
-    /// * `db` - A `DBWrapper` instance to access the underlying BoltDB.
+    /// * `db` - A `DB` instance to access the underlying BoltDB.
     /// * `projected_schema` - The schema of the `RecordBatch`es to produce.
     /// * `limit` - An optional limit on the total number of rows to return.
-    fn new(db: DBWrapper, projected_schema: SchemaRef, limit: Option<usize>) -> Self {
+    fn new(db: DB, projected_schema: SchemaRef, limit: Option<usize>) -> Self {
         Self {
             projected_schema,
             limit,
@@ -349,7 +349,7 @@ impl PagesStream {
                     // This case should ideally not be reached if the projected schema is valid.
                     return Err(DataFusionError::Internal(format!(
                         "Unknown column {field_name}"
-                    )))
+                    )));
                 }
             };
             columns.insert(field_name, array);
