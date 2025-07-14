@@ -152,6 +152,9 @@ impl DB {
     }
 }
 
+/// The inner, non-thread-safe implementation of the BoltDB reader.
+/// This struct holds the file handle, caches pages, and contains the core logic
+/// for reading and interpreting the database file.
 pub struct DBInner {
     file: File,
 
@@ -172,6 +175,7 @@ impl std::fmt::Debug for DBInner {
     }
 }
 
+/// An internal representation of a database page, including its parsed data and elements.
 struct Page {
     id: u64,
     typ: PageType,
@@ -191,6 +195,7 @@ impl std::fmt::Debug for Page {
     }
 }
 
+/// An enum representing the parsed elements of a page, which can be either branch or leaf elements.
 #[derive(Debug)]
 enum Element {
     Branch(Vec<boltypes::BranchElement>),
@@ -220,12 +225,26 @@ impl PartialOrd for PageInfo {
     }
 }
 
+/// Represents a bucket within the database.
+/// This struct contains metadata about the bucket, including its identity and relationship to parent buckets.
 #[derive(Clone)]
 pub struct Bucket {
-    pub parent_bucket: Vec<u8>,
+    /// A unique identifier for the bucket, constructed by combining the bucket's name and the page ID
+    /// on which it is defined (e.g., "my-bucket/3"). This provides a stable and unique reference
+    /// within a single database view.
+    pub id: String,
+    /// The unique identifier (`id`) of the parent bucket. This is `None` for root-level buckets.
+    pub parent_id: Option<String>,
+    /// The name of the parent bucket. This is `None` for root-level buckets.
+    pub parent_name: Option<Vec<u8>>,
+    /// The page ID where the bucket's data is stored. For inline buckets, this refers to the root page ID
+    /// of the inline bucket, which is typically 0.
     pub page_id: u64,
+    /// A flag indicating whether the bucket is stored inline within its parent's page.
     pub is_inline: bool,
+    /// The name of the bucket as raw bytes.
     pub name: Vec<u8>,
+    /// The nesting depth of the bucket, where 0 is the root level.
     pub depth: u64,
 }
 
@@ -238,10 +257,14 @@ pub enum PageType {
     Free,
 }
 
+/// Represents a key-value pair within a bucket.
 #[derive(Debug, Clone)]
 pub struct KeyValue {
+    /// The key of the key-value pair.
     pub key: Vec<u8>,
+    /// The value of the key-value pair.
     pub value: Vec<u8>,
+    /// The nesting depth of the key-value pair relative to the root.
     pub depth: u64,
 }
 
@@ -250,6 +273,12 @@ pub enum DbItem {
     KeyValue(KeyValue),
     InlineBucket(Bucket),
     Bucket(Bucket),
+}
+
+#[derive(Clone)]
+struct ParentBucketInfo {
+    id: String,
+    name: Vec<u8>,
 }
 
 struct DbItemIterator {
@@ -298,28 +327,44 @@ impl Iterator for DbItemIterator {
                         let elem = leaf_elements[item.index].clone();
                         item.index += 1;
                         match elem {
-                            boltypes::LeafElement::Bucket { name, pgid } => {
+                            boltypes::LeafElement::Bucket {
+                                name,
+                                root_pgid,
+                                pgid,
+                            } => {
+                                let id = format!("{}/{}", String::from_utf8_lossy(&name), pgid);
                                 self.stack.push(IterItem {
-                                    node: ItemNode::Page(pgid),
+                                    node: ItemNode::Page(root_pgid),
                                     index: 0,
                                     depth: Some(depth),
-                                    parent_bucket: parent_bucket.clone(),
+                                    parent_bucket: Some(ParentBucketInfo {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                    }),
                                 });
 
                                 return Some(Ok(DbItem::Bucket(Bucket {
-                                    parent_bucket: parent_bucket
-                                        .clone()
-                                        .as_ref()
-                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                    id,
+                                    parent_id: parent_bucket.clone().map(|p| p.id),
+                                    parent_name: parent_bucket.map(|p| p.name),
                                     is_inline: false,
-                                    page_id: Into::<u64>::into(pgid),
+                                    page_id: Into::<u64>::into(root_pgid),
                                     name,
                                     depth,
                                 })));
                             }
-                            boltypes::LeafElement::InlineBucket { name, pgid, items } => {
+                            boltypes::LeafElement::InlineBucket {
+                                name,
+                                root_pgid,
+                                pgid,
+                                items,
+                            } => {
+                                let id = format!("{}/{}", String::from_utf8_lossy(&name), pgid);
                                 self.stack.push(IterItem {
-                                    parent_bucket: parent_bucket.clone(),
+                                    parent_bucket: Some(ParentBucketInfo {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                    }),
                                     node: ItemNode::Elements(
                                         items
                                             .iter()
@@ -334,12 +379,11 @@ impl Iterator for DbItemIterator {
                                     depth: Some(depth),
                                 });
                                 return Some(Ok(DbItem::InlineBucket(Bucket {
-                                    parent_bucket: parent_bucket
-                                        .clone()
-                                        .as_ref()
-                                        .map_or_else(Vec::new, |bucket| bucket.name.clone()),
+                                    id,
+                                    parent_id: parent_bucket.clone().map(|p| p.id),
+                                    parent_name: parent_bucket.map(|p| p.name),
                                     is_inline: true,
-                                    page_id: Into::<u64>::into(pgid),
+                                    page_id: Into::<u64>::into(root_pgid),
                                     name,
                                     depth,
                                 })));
@@ -561,7 +605,9 @@ impl DBInner {
                                 }));
                             }
                         }
-                        boltypes::LeafElement::Bucket { name, pgid } => {
+                        boltypes::LeafElement::Bucket {
+                            name, root_pgid, ..
+                        } => {
                             if buckets.is_empty() {
                                 continue;
                             }
@@ -570,7 +616,7 @@ impl DBInner {
                                 return self.get_key_value_inner(
                                     &buckets[1..],
                                     key,
-                                    Into::<u64>::into(*pgid),
+                                    Into::<u64>::into(*root_pgid),
                                 );
                             }
                         }
@@ -718,7 +764,8 @@ impl Iterator for PageIterator {
                 for leaf_item in leaf_elements {
                     if let boltypes::LeafElement::Bucket {
                         name: _,
-                        pgid: pg_id,
+                        root_pgid: pg_id,
+                        ..
                     } = leaf_item
                     {
                         self.stack.push(PageIterItem {
@@ -744,14 +791,20 @@ impl Iterator for PageIterator {
     }
 }
 
+/// An iterator that filters for and returns only `Bucket` items from a `DbItemIterator`.
 struct BucketIterator<T: Iterator<Item = Result<DbItem, DatabaseError>>> {
     iter: T,
 }
 
+/// An item in the `DbItemIterator` stack, representing the current state of the traversal.
 struct IterItem {
-    parent_bucket: Option<Bucket>,
+    /// Information about the parent bucket, if any.
+    parent_bucket: Option<ParentBucketInfo>,
+    /// The current node being processed, which can be a page or a list of inline elements.
     node: ItemNode,
+    /// The index of the next element to process within the current node.
     index: usize,
+    /// The current nesting depth.
     depth: Option<u64>,
 }
 
@@ -1012,12 +1065,7 @@ mod tests {
                         expect.name
                     );
 
-                    assert_child_items_equal(
-                        depth + 1,
-                        &format!("{}/{}", parent, expect.name),
-                        iter,
-                        expect.items.as_slice(),
-                    );
+                    assert_child_items_equal(depth + 1, &actual.id, iter, expect.items.as_slice());
                 }
                 Some(Ok(DbItem::InlineBucket(ref actual))) => {
                     assert_eq!(
@@ -1031,12 +1079,7 @@ mod tests {
                         expect.name,
                     );
 
-                    assert_child_items_equal(
-                        depth + 1,
-                        &format!("{}/{}", parent, expect.name),
-                        iter,
-                        expect.items.as_slice(),
-                    );
+                    assert_child_items_equal(depth + 1, &actual.id, iter, expect.items.as_slice());
                 }
                 Some(Ok(DbItem::KeyValue(_))) => {
                     panic!("want bucket item at {i} but got kvs: {parent}");
