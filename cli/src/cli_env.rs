@@ -22,5 +22,5 @@
 
 #[derive(Clone)]
 pub struct Env {
-    pub db: ancla::DBWrapper,
+    pub db: ancla::DB,
 }
