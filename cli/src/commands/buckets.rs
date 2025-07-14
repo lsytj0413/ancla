@@ -27,6 +27,7 @@ use comfy_table::presets::NOTHING;
 use comfy_table::Table;
 use std::iter::Peekable;
 
+/// Command to display a tree of all buckets in the database.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_buckets")]
 pub struct BucketsCommand {}
@@ -42,11 +43,23 @@ pub fn run_buckets(
     Ok(())
 }
 
+/// A local representation of a bucket, used to build a tree structure for display.
 struct Bucket {
+    /// The unique identifier for the bucket, composed of its name and the page ID it resides on.
+    id: String,
+    /// The name of the bucket.
     name: Vec<u8>,
+    /// The page ID where the bucket's data is stored. For inline buckets, this is the root page ID.
     page_id: u64,
+    /// A flag indicating whether the bucket is stored inline within its parent's page.
     is_inline: bool,
+    /// The nesting depth of the bucket.
     depth: u64,
+    /// The ID of the parent bucket. `None` for root buckets.
+    parent_id: Option<String>,
+    /// The name of the parent bucket. `None` for root buckets.
+    parent_name: Option<Vec<u8>>,
+    /// A list of child buckets nested under this one.
     child_buckets: Vec<Bucket>,
 }
 
@@ -68,10 +81,13 @@ where
                 std::cmp::Ordering::Equal => {
                     peek_iter.next();
                     buckets.push(Bucket {
+                        id: bucket.id,
                         name: bucket.name.clone(),
                         page_id: bucket.page_id,
                         is_inline: bucket.is_inline,
                         depth: bucket.depth,
+                        parent_id: bucket.parent_id,
+                        parent_name: bucket.parent_name,
                         child_buckets: iter_buckets_inner(peek_iter, depth + 1),
                     });
                 }
@@ -113,10 +129,13 @@ fn iter_buckets(db: ancla::DB) -> Vec<Bucket> {
                 }
 
                 buckets.push(Bucket {
+                    id: bucket.id,
                     name: bucket.name.clone(),
                     page_id: bucket.page_id,
                     is_inline: bucket.is_inline,
                     depth: bucket.depth,
+                    parent_id: bucket.parent_id,
+                    parent_name: bucket.parent_name,
                     child_buckets: iter_buckets_inner(&mut peek_iter, 1),
                 });
             }
@@ -136,9 +155,12 @@ fn print_buckets_inner(buckets: &[Bucket], table: &mut comfy_table::Table, level
                 "{chr:>level$}{}",
                 String::from_utf8(bucket.name.clone()).unwrap()
             ),
+            bucket.id.to_string(),
             bucket.page_id.to_string(),
             bucket.is_inline.to_string(),
             bucket.depth.to_string(),
+            bucket.parent_id.clone().unwrap_or_default(),
+            String::from_utf8(bucket.parent_name.clone().unwrap_or_default()).unwrap(),
         ]);
         print_buckets_inner(&bucket.child_buckets, table, level + 1);
     }
@@ -149,14 +171,25 @@ fn print_buckets(buckets: &Vec<Bucket>) {
     buckets_table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
     buckets_table.load_preset(NOTHING);
     buckets_table.enforce_styling();
-    buckets_table.set_header(vec!["BUCKET-NAME", "PAGE-ID", "IS-INLINE", "DEPTH"]);
+    buckets_table.set_header(vec![
+        "BUCKET-NAME",
+        "ID",
+        "PAGE-ID",
+        "IS-INLINE",
+        "DEPTH",
+        "PARENT-ID",
+        "PARENT-NAME",
+    ]);
 
     for bucket in buckets {
         buckets_table.add_row(vec![
             String::from_utf8(bucket.name.clone()).unwrap(),
+            bucket.id.to_string(),
             bucket.page_id.to_string(),
             bucket.is_inline.to_string(),
             bucket.depth.to_string(),
+            bucket.parent_id.clone().unwrap_or_default(),
+            String::from_utf8(bucket.parent_name.clone().unwrap_or_default()).unwrap(),
         ]);
 
         print_buckets_inner(&bucket.child_buckets, &mut buckets_table, 1);

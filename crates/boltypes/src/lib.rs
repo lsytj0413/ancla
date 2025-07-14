@@ -492,11 +492,7 @@ impl BranchPage {
                 TryFrom::try_from(self.data.get(start..).ok_or(Error::InvalidData(
                     "slice out of bounds for branch element header",
                 ))?)?;
-            elements.push(BranchElement::from_page(
-                self.data.as_slice(),
-                &elem_header,
-                i,
-            )?);
+            elements.push(BranchElement::from_page(self, &elem_header, i)?);
         }
 
         Ok(elements)
@@ -567,11 +563,7 @@ impl LeafPage {
             let elem_header: LeafElementHeader = TryFrom::try_from(self.data.get(start..).ok_or(
                 Error::InvalidData("slice out of bounds for leaf element header"),
             )?)?;
-            elements.push(LeafElement::from_page(
-                self.data.as_slice(),
-                &elem_header,
-                i,
-            )?);
+            elements.push(LeafElement::from_page(self, &elem_header, i)?);
         }
 
         Ok(elements)
@@ -768,8 +760,8 @@ impl BranchElement {
     /// * `page` - data of current page
     /// * `elem` - element header of current branch
     /// * `idx` - idx of current element header in this page, start from 0
-    pub fn from_page(
-        page: &[u8],
+    fn from_page(
+        page: &BranchPage,
         elem: &BranchElementHeader,
         idx: u16,
     ) -> Result<BranchElement, Error> {
@@ -777,15 +769,16 @@ impl BranchElement {
         let key_start = start + elem.pos as usize;
         let key_end = key_start + elem.ksize as usize;
 
-        if key_end > page.len() {
+        if key_end > page.data.len() {
             return Err(Error::TooSmallData {
                 expect: key_end,
-                got: page.len(),
+                got: page.data.len(),
             });
         }
 
         Ok(BranchElement {
             key: page
+                .data
                 .get(key_start..key_end)
                 .ok_or(Error::InvalidData("key slice out of bounds"))?
                 .to_vec(),
@@ -949,7 +942,7 @@ impl KeyValue {
     /// # Returns
     ///
     /// kv of current leaf element
-    pub fn from_page(page: &[u8], elem: &LeafElementHeader, idx: u16) -> Result<KeyValue, Error> {
+    fn from_page(page: &[u8], elem: &LeafElementHeader, idx: u16) -> Result<KeyValue, Error> {
         if elem.is_bucket() {
             return Err(Error::UnexpectBucketLeaf);
         }
@@ -979,18 +972,35 @@ impl KeyValue {
     }
 }
 
-/// Represents element in leaf page.
+/// Represents an element stored in a leaf page.
+///
+/// A leaf page can contain regular key-value pairs, nested buckets,
+/// or inline buckets (small buckets stored directly within the leaf page).
 #[derive(Debug, Clone)]
 pub enum LeafElement {
+    /// Represents a nested bucket that is not stored inline.
+    /// The actual bucket data is located on a separate page.
     Bucket {
+        /// The name of the bucket.
         name: Vec<u8>,
+        /// The page ID of the bucket's root page, where its own elements are stored.
+        root_pgid: Pgid,
+        /// The page ID of the leaf page where this bucket definition resides.
         pgid: Pgid,
     },
+    /// Represents a small bucket whose data is stored directly within the parent leaf page.
+    /// This avoids the overhead of allocating a separate page for the bucket.
     InlineBucket {
+        /// The name of the inline bucket.
         name: Vec<u8>,
+        /// The root page ID of the bucket. For inline buckets, this is always 0.
+        root_pgid: Pgid,
+        /// The page ID of the leaf page where this inline bucket is stored.
         pgid: Pgid,
+        /// The key-value pairs stored directly within this inline bucket.
         items: Vec<KeyValue>,
     },
+    /// Represents a standard key-value pair.
     KeyValue(KeyValue),
 }
 
@@ -1006,13 +1016,13 @@ impl LeafElement {
     /// # Returns
     ///
     /// current leaf element
-    pub fn from_page(
-        page: &[u8],
+    fn from_page(
+        page: &LeafPage,
         elem: &LeafElementHeader,
         idx: u16,
     ) -> Result<LeafElement, Error> {
         if !elem.is_bucket() {
-            return KeyValue::from_page(page, elem, idx).map(LeafElement::KeyValue);
+            return KeyValue::from_page(page.data.as_slice(), elem, idx).map(LeafElement::KeyValue);
         }
 
         let start = PAGE_HEADER_SIZE + (idx as usize) * LEAF_ELEMENT_HEADER_SIZE;
@@ -1020,17 +1030,19 @@ impl LeafElement {
         let key_end = key_start + elem.ksize as usize;
         let value_end = key_end + elem.vsize as usize;
 
-        if value_end > page.len() {
+        if value_end > page.data.len() {
             return Err(Error::TooSmallData {
                 expect: value_end,
-                got: page.len(),
+                got: page.data.len(),
             });
         }
 
         let key = page
+            .data
             .get(key_start..key_end)
             .ok_or(Error::InvalidData("key slice out of bounds"))?;
         let value = page
+            .data
             .get(key_end..value_end)
             .ok_or(Error::InvalidData("value slice out of bounds"))?;
 
@@ -1038,7 +1050,8 @@ impl LeafElement {
         if !bucket_header.is_inline() {
             return Ok(LeafElement::Bucket {
                 name: key.to_vec(),
-                pgid: bucket_header.root,
+                root_pgid: bucket_header.root,
+                pgid: page.page_header().id,
             });
         }
 
@@ -1048,7 +1061,8 @@ impl LeafElement {
         let inline_page = LeafPage::new(inline_page_data.to_vec(), inline_page_data.len())?; // For inline pages, page_size is not meaningful
         Ok(LeafElement::InlineBucket {
             name: key.to_vec(),
-            pgid: bucket_header.root, // TODO: consider use which pgid
+            root_pgid: bucket_header.root,
+            pgid: page.page_header().id,
             items: inline_page
                 .leaf_elements()?
                 .into_iter()
@@ -1473,8 +1487,9 @@ mod tests {
         let data_start = elem_start + 16;
         data[data_start..data_start + 3].copy_from_slice(b"key");
 
-        let elem_header = BranchElementHeader::try_from(&data[elem_start..]).unwrap();
-        let element = BranchElement::from_page(&data, &elem_header, 0).unwrap();
+        let page = BranchPage::new(data, 100).unwrap();
+        let elem_header = BranchElementHeader::try_from(&page.data[elem_start..]).unwrap();
+        let element = BranchElement::from_page(&page, &elem_header, 0).unwrap();
         assert_eq!(element.key, b"key");
         assert_eq!(element.pgid.0, 5);
     }
@@ -1498,8 +1513,9 @@ mod tests {
         data[data_start..data_start + 3].copy_from_slice(b"key");
         data[data_start + 3..data_start + 3 + 5].copy_from_slice(b"value");
 
-        let elem_header = LeafElementHeader::try_from(&data[elem_start..]).unwrap();
-        let element = LeafElement::from_page(&data, &elem_header, 0).unwrap();
+        let page = LeafPage::new(data, 100).unwrap();
+        let elem_header = LeafElementHeader::try_from(&page.data[elem_start..]).unwrap();
+        let element = LeafElement::from_page(&page, &elem_header, 0).unwrap();
         match element {
             LeafElement::KeyValue(kv) => {
                 assert_eq!(kv.key, b"key");
@@ -1532,12 +1548,18 @@ mod tests {
         // BucketHeader
         data[data_start + 4..data_start + 4 + 8].copy_from_slice(&7u64.to_le_bytes()); // root pgid
 
-        let elem_header = LeafElementHeader::try_from(&data[elem_start..]).unwrap();
-        let element = LeafElement::from_page(&data, &elem_header, 0).unwrap();
+        let page = LeafPage::new(data, 128).unwrap();
+        let elem_header = LeafElementHeader::try_from(&page.data[elem_start..]).unwrap();
+        let element = LeafElement::from_page(&page, &elem_header, 0).unwrap();
         match element {
-            LeafElement::Bucket { name, pgid } => {
+            LeafElement::Bucket {
+                name,
+                root_pgid,
+                pgid,
+            } => {
                 assert_eq!(name, b"name");
-                assert_eq!(pgid.0, 7);
+                assert_eq!(root_pgid.0, 7);
+                assert_eq!(pgid.0, 0);
             }
             _ => panic!("unexpected element type"),
         }
