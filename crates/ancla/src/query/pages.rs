@@ -29,8 +29,8 @@ use crate::{
 use async_trait::async_trait;
 use datafusion::{
     arrow::{
-        array::{ArrayRef, PrimitiveBuilder, StringBuilder},
-        datatypes::{DataType, Field, Schema, SchemaRef, UInt64Type},
+        array::{ArrayRef, StringBuilder, UInt64Builder},
+        datatypes::{DataType, Field, Schema, SchemaRef},
         record_batch::RecordBatch,
     },
     datasource::{TableProvider, TableType},
@@ -302,7 +302,7 @@ impl PagesStream {
         for field_name in field_names {
             let array: ArrayRef = match field_name {
                 "id" => {
-                    let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(batch.len());
+                    let mut builder = UInt64Builder::with_capacity(batch.len());
                     for p in &batch {
                         builder.append_value(p.id);
                     }
@@ -317,28 +317,28 @@ impl PagesStream {
                     Arc::new(builder.finish())
                 }
                 "overflow" => {
-                    let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(batch.len());
+                    let mut builder = UInt64Builder::with_capacity(batch.len());
                     for p in &batch {
                         builder.append_value(p.overflow);
                     }
                     Arc::new(builder.finish())
                 }
                 "capacity" => {
-                    let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(batch.len());
+                    let mut builder = UInt64Builder::with_capacity(batch.len());
                     for p in &batch {
                         builder.append_value(p.capacity);
                     }
                     Arc::new(builder.finish())
                 }
                 "used" => {
-                    let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(batch.len());
+                    let mut builder = UInt64Builder::with_capacity(batch.len());
                     for p in &batch {
                         builder.append_value(p.used);
                     }
                     Arc::new(builder.finish())
                 }
                 "parent_page_id" => {
-                    let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(batch.len());
+                    let mut builder = UInt64Builder::with_capacity(batch.len());
                     for p in &batch {
                         // Handle optional parent_page_id, appending None for null values.
                         builder.append_option(p.parent_page_id);

@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use ancla::query::{engine::QueryEngine, pages::PagesTableProvider};
+use ancla::query::{buckets::BucketsTableProvider, engine::QueryEngine, pages::PagesTableProvider};
 use anyhow::Result;
 use cling::prelude::*;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -60,6 +60,11 @@ async fn run(env: State<crate::cli_env::Env>, me: &QueryCommand) -> Result<()> {
     // `PagesTableProvider` is responsible for providing DataFusion with access to the BoltDB page data.
     // `env.0.db.clone()` creates a new `DB` instance that shares the underlying database connection.
     engine.register_table("pages", Arc::new(PagesTableProvider::new(env.0.db.clone())))?;
+    // Register the `buckets` table with the query engine.
+    engine.register_table(
+        "buckets",
+        Arc::new(BucketsTableProvider::new(env.0.db.clone())),
+    )?;
 
     // Execute the SQL query using the DataFusion context.
     // This returns a DataFrame, which represents the logical plan of the query.
