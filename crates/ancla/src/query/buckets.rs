@@ -34,15 +34,17 @@ use datafusion::execution::context::SessionState;
 use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::ExecutionPlan;
 
-/// A `TableProvider` for the buckets data.
+/// `BucketsTableProvider` is a `TableProvider` implementation for DataFusion that provides access to
+/// the buckets within the BoltDB database.
 ///
-/// This struct is responsible for providing the buckets data to the DataFusion query engine.
+/// This struct enables querying bucket metadata using SQL queries through DataFusion.
 /// It wraps a `DB` instance and implements the `TableProvider` trait, allowing it to be
 /// registered as a table in DataFusion.
 ///
 /// The provider uses a full-batch loading approach (`MemoryExec`) because the total number
 /// of buckets in a typical BoltDB file is expected to be small enough to fit comfortably
 /// in memory. This simplifies the implementation compared to a streaming approach.
+#[derive(Clone)]
 pub struct BucketsTableProvider {
     db: DB,
 }
@@ -69,6 +71,15 @@ impl TableProvider for BucketsTableProvider {
     ///
     /// The schema specifies the column names, data types, and nullability, which is essential
     /// for DataFusion's query planner and type checking.
+    ///
+    /// The schema includes:
+    /// - `id`: The unique identifier of the bucket (UTF8).
+    /// - `name`: The name of the bucket (UTF8).
+    /// - `page_id`: The page ID where the bucket is located (UInt64).
+    /// - `is_inline`: A boolean indicating if the bucket is inline (Boolean).
+    /// - `depth`: The nesting depth of the bucket (UInt64).
+    /// - `parent_id`: The unique identifier of the parent bucket (UTF8, nullable).
+    /// - `parent_name`: The name of the parent bucket (UTF8, nullable).
     fn schema(&self) -> SchemaRef {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -142,20 +153,18 @@ impl TableProvider for BucketsTableProvider {
 
         // Iterate over the in-memory vector of buckets and populate the Arrow array builders.
         for bucket in buckets {
-            id_builder.append_value(bucket.id);
-            name_builder.append_value(String::from_utf8(bucket.name).unwrap_or_default());
-            page_id_builder.append_value(bucket.page_id);
+            id_builder.append_value(bucket.identifier.id());
+            name_builder
+                .append_value(String::from_utf8(bucket.identifier.name).unwrap_or_default());
+            page_id_builder.append_value(bucket.identifier.page_id);
             is_inline_builder.append_value(bucket.is_inline);
             depth_builder.append_value(bucket.depth);
-            if let Some(parent_id) = bucket.parent_id {
-                parent_id_builder.append_value(parent_id);
+            if let Some(parent) = bucket.parent {
+                parent_id_builder.append_value(parent.id());
+                parent_name_builder
+                    .append_value(String::from_utf8(parent.name).unwrap_or_default());
             } else {
                 parent_id_builder.append_null();
-            }
-            if let Some(parent_name) = bucket.parent_name {
-                parent_name_builder
-                    .append_value(String::from_utf8(parent_name).unwrap_or_default());
-            } else {
                 parent_name_builder.append_null();
             }
         }
