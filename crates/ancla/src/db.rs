@@ -226,26 +226,46 @@ impl PartialOrd for PageInfo {
 }
 
 /// Represents a bucket within the database.
-/// This struct contains metadata about the bucket, including its identity and relationship to parent buckets.
+/// This struct contains metadata about the bucket, including its identity and relationship to parent buckets,
+/// and its physical storage details.
 #[derive(Clone)]
 pub struct Bucket {
-    /// A unique identifier for the bucket, constructed by combining the bucket's name and the page ID
-    /// on which it is defined (e.g., "my-bucket/3"). This provides a stable and unique reference
-    /// within a single database view.
-    pub id: String,
-    /// The unique identifier (`id`) of the parent bucket. This is `None` for root-level buckets.
-    pub parent_id: Option<String>,
-    /// The name of the parent bucket. This is `None` for root-level buckets.
-    pub parent_name: Option<Vec<u8>>,
-    /// The page ID where the bucket's data is stored. For inline buckets, this refers to the root page ID
+    /// The parent bucket's identifier, if any. This is `None` for root-level buckets.
+    pub parent: Option<BucketIdentifier>,
+    /// The root page ID where the bucket's data is stored. For inline buckets, this refers to the root page ID
     /// of the inline bucket, which is typically 0.
-    pub page_id: u64,
+    pub root_page_id: u64,
+    /// The unique identifier for this bucket, combining its name and the page ID it resides on.
+    pub identifier: BucketIdentifier,
     /// A flag indicating whether the bucket is stored inline within its parent's page.
     pub is_inline: bool,
-    /// The name of the bucket as raw bytes.
-    pub name: Vec<u8>,
     /// The nesting depth of the bucket, where 0 is the root level.
     pub depth: u64,
+}
+
+/// Represents a unique identifier for a bucket.
+/// This struct combines the page ID where the bucket resides and its name to form a unique identifier.
+#[derive(Clone, Debug)]
+pub struct BucketIdentifier {
+    /// The page ID where the bucket is located.
+    pub page_id: u64,
+    /// The name of the bucket as raw bytes.
+    pub name: Vec<u8>,
+}
+
+impl BucketIdentifier {
+    /// Generates a unique string identifier for the bucket.
+    /// The ID is formed by concatenating the bucket's name and its page ID (e.g., "my-bucket/123").
+    pub fn id(&self) -> String {
+        format!("{}/{}", String::from_utf8_lossy(&self.name), self.page_id)
+    }
+}
+
+impl Bucket {
+    /// Returns the unique string identifier for this bucket.
+    pub fn id(&self) -> String {
+        self.identifier.id()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -273,12 +293,6 @@ pub enum DbItem {
     KeyValue(KeyValue),
     InlineBucket(Bucket),
     Bucket(Bucket),
-}
-
-#[derive(Clone)]
-struct ParentBucketInfo {
-    id: String,
-    name: Vec<u8>,
 }
 
 struct DbItemIterator {
@@ -332,24 +346,27 @@ impl Iterator for DbItemIterator {
                                 root_pgid,
                                 pgid,
                             } => {
-                                let id = format!("{}/{}", String::from_utf8_lossy(&name), pgid);
                                 self.stack.push(IterItem {
                                     node: ItemNode::Page(root_pgid),
                                     index: 0,
                                     depth: Some(depth),
-                                    parent_bucket: Some(ParentBucketInfo {
-                                        id: id.clone(),
+                                    parent_bucket: Some(BucketIdentifier {
+                                        page_id: Into::<u64>::into(root_pgid),
                                         name: name.clone(),
                                     }),
                                 });
 
                                 return Some(Ok(DbItem::Bucket(Bucket {
-                                    id,
-                                    parent_id: parent_bucket.clone().map(|p| p.id),
-                                    parent_name: parent_bucket.map(|p| p.name),
+                                    parent: parent_bucket.clone().map(|p| BucketIdentifier {
+                                        page_id: p.page_id,
+                                        name: p.name,
+                                    }),
                                     is_inline: false,
-                                    page_id: Into::<u64>::into(root_pgid),
-                                    name,
+                                    root_page_id: Into::<u64>::into(root_pgid),
+                                    identifier: BucketIdentifier {
+                                        page_id: Into::<u64>::into(pgid),
+                                        name: name.clone(),
+                                    },
                                     depth,
                                 })));
                             }
@@ -359,10 +376,9 @@ impl Iterator for DbItemIterator {
                                 pgid,
                                 items,
                             } => {
-                                let id = format!("{}/{}", String::from_utf8_lossy(&name), pgid);
                                 self.stack.push(IterItem {
-                                    parent_bucket: Some(ParentBucketInfo {
-                                        id: id.clone(),
+                                    parent_bucket: Some(BucketIdentifier {
+                                        page_id: Into::<u64>::into(pgid),
                                         name: name.clone(),
                                     }),
                                     node: ItemNode::Elements(
@@ -379,12 +395,16 @@ impl Iterator for DbItemIterator {
                                     depth: Some(depth),
                                 });
                                 return Some(Ok(DbItem::InlineBucket(Bucket {
-                                    id,
-                                    parent_id: parent_bucket.clone().map(|p| p.id),
-                                    parent_name: parent_bucket.map(|p| p.name),
+                                    parent: parent_bucket.clone().map(|p| BucketIdentifier {
+                                        page_id: p.page_id,
+                                        name: p.name,
+                                    }),
                                     is_inline: true,
-                                    page_id: Into::<u64>::into(root_pgid),
-                                    name,
+                                    root_page_id: Into::<u64>::into(root_pgid),
+                                    identifier: BucketIdentifier {
+                                        page_id: Into::<u64>::into(pgid),
+                                        name: name.clone(),
+                                    },
                                     depth,
                                 })));
                             }
@@ -799,7 +819,7 @@ struct BucketIterator<T: Iterator<Item = Result<DbItem, DatabaseError>>> {
 /// An item in the `DbItemIterator` stack, representing the current state of the traversal.
 struct IterItem {
     /// Information about the parent bucket, if any.
-    parent_bucket: Option<ParentBucketInfo>,
+    parent_bucket: Option<BucketIdentifier>,
     /// The current node being processed, which can be a page or a list of inline elements.
     node: ItemNode,
     /// The index of the next element to process within the current node.
@@ -901,7 +921,7 @@ mod tests {
                 }
                 Some(Ok(actual)) => {
                     assert_eq!(
-                        String::from_utf8(actual.name).unwrap(),
+                        String::from_utf8(actual.identifier.name.clone()).unwrap(),
                         expect.name,
                         "different child bucket name under: {parent}"
                     );
@@ -1000,7 +1020,7 @@ mod tests {
                 Item::Bucket { bucket } => match n {
                     Ok(super::DbItem::Bucket(actual)) => {
                         assert_eq!(
-                            String::from_utf8(actual.name).unwrap(),
+                            String::from_utf8(actual.identifier.name.clone()).unwrap(),
                             bucket.name,
                             "different child bucket name under: {parent}"
                         );
@@ -1019,7 +1039,7 @@ mod tests {
                     }
                     Ok(super::DbItem::InlineBucket(actual)) => {
                         assert_eq!(
-                            String::from_utf8(actual.name).unwrap(),
+                            String::from_utf8(actual.identifier.name.clone()).unwrap(),
                             bucket.name,
                             "different child bucket name under: {parent}"
                         );
@@ -1055,7 +1075,7 @@ mod tests {
                 }
                 Some(Ok(DbItem::Bucket(actual))) => {
                     assert_eq!(
-                        String::from_utf8(actual.name).unwrap(),
+                        String::from_utf8(actual.identifier.name.clone()).unwrap(),
                         expect.name,
                         "different child bucket name under: {parent}"
                     );
@@ -1065,11 +1085,16 @@ mod tests {
                         expect.name
                     );
 
-                    assert_child_items_equal(depth + 1, &actual.id, iter, expect.items.as_slice());
+                    assert_child_items_equal(
+                        depth + 1,
+                        &actual.id(),
+                        iter,
+                        expect.items.as_slice(),
+                    );
                 }
                 Some(Ok(DbItem::InlineBucket(ref actual))) => {
                     assert_eq!(
-                        String::from_utf8(actual.name.clone()).unwrap(),
+                        String::from_utf8(actual.identifier.name.clone()).unwrap(),
                         expect.name,
                         "different child bucket name under: {parent}"
                     );
@@ -1079,7 +1104,12 @@ mod tests {
                         expect.name,
                     );
 
-                    assert_child_items_equal(depth + 1, &actual.id, iter, expect.items.as_slice());
+                    assert_child_items_equal(
+                        depth + 1,
+                        &actual.id(),
+                        iter,
+                        expect.items.as_slice(),
+                    );
                 }
                 Some(Ok(DbItem::KeyValue(_))) => {
                     panic!("want bucket item at {i} but got kvs: {parent}");
